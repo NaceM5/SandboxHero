@@ -1,0 +1,5 @@
+# server-side only — the site is static, these must not be published
+server.js
+package.json
+.claude/
+.DS_Store
