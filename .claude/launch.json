@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "sandboxhero", "runtimeExecutable": "node", "runtimeArgs": ["server.js", "8232"], "port": 8232 }
+  ]
+}

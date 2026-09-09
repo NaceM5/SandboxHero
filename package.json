@@ -1,0 +1,10 @@
+{
+  "name": "sandbox-hero",
+  "version": "1.0.0",
+  "description": "Open-world superhero sandbox in the browser",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js 8232"
+  },
+  "private": true
+}

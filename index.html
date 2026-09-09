@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SANDBOX HERO</title>
+<link rel="stylesheet" href="./src/ui/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<canvas id="view"></canvas>
+
+<!-- ===== Boot / loading ===== -->
+<div id="boot">
+  <div class="boot-inner">
+    <div class="logo">SANDBOX<span>HERO</span></div>
+    <div class="boot-bar"><i id="bootFill"></i></div>
+    <div class="boot-msg" id="bootMsg">building the city…</div>
+  </div>
+</div>
+
+<!-- ===== HUD ===== -->
+<div id="hud" class="hidden">
+  <div id="crosshair"><i></i></div>
+
+  <div id="hud-left">
+    <div class="bar-wrap" id="healthWrap">
+      <div class="bar-label">VITALS</div>
+      <div class="bar"><i id="healthFill"></i></div>
+    </div>
+    <div class="bar-wrap">
+      <div class="bar-label" id="energyLabel">ENERGY</div>
+      <div class="bar alt"><i id="energyFill"></i></div>
+    </div>
+  </div>
+
+  <div id="powerbar"></div>
+
+  <div id="hud-right">
+    <div id="statline"></div>
+  </div>
+
+  <div id="notice"></div>
+  <div id="objective" class="hidden">
+    <div class="obj-title">CRIME IN PROGRESS</div>
+    <div class="obj-sub" id="objSub"></div>
+  </div>
+
+  <div id="minimap"><canvas id="minimapCanvas" width="230" height="230"></canvas></div>
+
+  <div id="quicktune" class="hidden">
+    <div class="qt-title">QUICK TUNE <span>scroll to adjust · 1&ndash;7 to pick</span></div>
+    <div id="qtList"></div>
+  </div>
+
+  <div id="speedlines"></div>
+  <div id="damageVignette"></div>
+  <div id="transformFlash"></div>
+</div>
+
+<!-- ===== Menu ===== -->
+<div id="menu" class="hidden">
+  <div class="menu-panel">
+    <header>
+      <div class="logo small">SANDBOX<span>HERO</span></div>
+      <nav id="tabs">
+        <button data-tab="world" class="active">World</button>
+        <button data-tab="crime">Crime</button>
+        <button data-tab="hero">Hero</button>
+        <button data-tab="suit">Super Suit</button>
+        <button data-tab="civ">Civilian</button>
+        <button data-tab="controls">Controls</button>
+      </nav>
+    </header>
+    <div class="menu-body">
+      <section data-panel="world"></section>
+      <section data-panel="crime" class="hidden"></section>
+      <section data-panel="hero" class="hidden"></section>
+      <section data-panel="suit" class="hidden"></section>
+      <section data-panel="civ" class="hidden"></section>
+      <section data-panel="controls" class="hidden">
+        <div class="controls-grid">
+          <div><kbd>W A S D</kbd><span>Move</span></div>
+          <div><kbd>Shift</kbd><span>Sprint on foot · afterburn in flight</span></div>
+          <div><kbd>Space</kbd><span>Jump · hold to ascend in flight</span></div>
+          <div><kbd>Ctrl</kbd> / <kbd>C</kbd><span>Descend · dive · land</span></div>
+          <div><kbd>S</kbd><span>In flight: disengage, keeping momentum</span></div>
+          <div><kbd>Alt</kbd> + scroll<span>Quick-tune an attribute (1&ndash;6 picks)</span></div>
+          <div><kbd>F</kbd><span>Toggle flight</span></div>
+          <div><kbd>T</kbd><span>Transform (civilian ⇄ suit)</span></div>
+          <div><kbd>1 – 5</kbd><span>Switch powerset</span></div>
+          <div><kbd>Mouse L</kbd><span>Primary power</span></div>
+          <div><kbd>Mouse R</kbd><span>Secondary power</span></div>
+          <div><kbd>Q</kbd><span>Ultimate / heavy</span></div>
+          <div><kbd>E</kbd><span>Enter / hijack vehicle</span></div>
+          <div><kbd>G</kbd><span>Grab &amp; throw (Kinetic)</span></div>
+          <div><kbd>Tab</kbd><span>Sandbox menu</span></div>
+          <div><kbd>Esc</kbd><span>Release mouse</span></div>
+          <div><kbd>V</kbd><span>Cycle camera distance</span></div>
+          <div><kbd>P</kbd><span>Spawn a crime near me</span></div>
+        </div>
+      </section>
+    </div>
+    <footer>
+      <button id="btnReset" class="ghost">Reset to defaults</button>
+      <div class="grow"></div>
+      <button id="btnRebuild" class="ghost">Rebuild world</button>
+      <button id="btnClose" class="primary">Resume</button>
+    </footer>
+  </div>
+</div>
+
+<div id="clickToPlay" class="hidden"><div>CLICK TO PLAY</div><small>Tab — sandbox settings</small></div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
