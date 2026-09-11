@@ -59,6 +59,16 @@
 
   <div id="minimap"><canvas id="minimapCanvas" width="230" height="230"></canvas></div>
 
+  <div id="scenarioStatus" class="hidden">
+    <div class="obj-title" id="scenarioTitle">SCENARIO</div>
+    <div class="obj-sub" id="scenarioSub"></div>
+  </div>
+
+  <div id="scenarioMenu" class="hidden">
+    <div class="qt-title">BATTLE SCENARIOS <span>hold M · press a number to launch · Backspace aborts</span></div>
+    <div id="scenarioList"></div>
+  </div>
+
   <div id="quicktune" class="hidden">
     <div class="qt-title">QUICK TUNE <span>scroll to adjust · 1&ndash;7 to pick</span></div>
     <div id="qtList"></div>
@@ -109,6 +119,7 @@
           <div><kbd>Esc</kbd><span>Release mouse</span></div>
           <div><kbd>V</kbd><span>Cycle camera distance</span></div>
           <div><kbd>P</kbd><span>Spawn a crime near me</span></div>
+          <div><kbd>M</kbd> (hold)<span>Battle scenarios — press a number to launch</span></div>
         </div>
       </section>
     </div>

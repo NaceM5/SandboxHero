@@ -3,6 +3,12 @@ const $ = id => document.getElementById(id);
 /* Schema-driven settings panels. Each row reads and writes settings live. */
 const PANELS = {
   world: [
+    { grp: 'Sound' },
+    { k: 'soundMuted', t: 'bool', label: 'Mute sound effects' },
+    { k: 'soundVolume', t: 'range', min: 0, max: 1, step: 0.05, label: 'Sound volume', fmt: v => Math.round(v * 100) + '%' },
+    { k: 'ambienceVolume', t: 'range', min: 0, max: 1, step: 0.05, label: 'Ambience volume', hint: 'City traffic, birds, shoreline and background wind', fmt: v => Math.round(v * 100) + '%' },
+    { k: 'musicVolume', t: 'range', min: 0, max: 1, step: 0.05, label: 'Music volume', hint: 'Plays while the city is quiet around you; fades out as you close on trouble', fmt: v => Math.round(v * 100) + '%' },
+    { k: 'radioVolume', t: 'range', min: 0, max: 1, step: 0.05, label: 'Car radio volume', hint: 'The station that plays while you are driving', fmt: v => Math.round(v * 100) + '%' },
     { grp: 'Environment' },
     { k: 'timeOfDay', t: 'range', min: 0, max: 1, step: 0.01, label: 'Time of day',
       hint: '0 midnight · 0.25 sunrise · 0.5 noon · 0.75 sunset', fmt: v => timeLabel(v) },
@@ -14,13 +20,15 @@ const PANELS = {
       hint: 'See-everything preset: lifts shadows, cuts haze, keeps windows lit' },
     { k: 'bloom', t: 'range', min: 0, max: 2.5, step: 0.05, label: 'Bloom', hint: 'Glow on lights, energy and windows' },
     { k: 'renderScale', t: 'range', min: 0.5, max: 1, step: 0.05, label: 'Render scale', hint: 'Lower this if the frame rate dips' },
-    { k: 'drawDistance', t: 'range', min: 500, max: 2600, step: 50, label: 'Draw distance', fmt: v => v + ' m' },
+    { k: 'drawDistance', t: 'range', min: 600, max: 7000, step: 100, label: 'Draw distance', fmt: v => v + ' m' },
     { grp: 'Population' },
     { k: 'pedestrians', t: 'range', min: 0, max: 450, step: 10, label: 'Crowd size',
       hint: 'Civilians kept alive at once — they stream to stay near you' },
     { k: 'crowdRadius', t: 'range', min: 110, max: 420, step: 10, label: 'Crowd radius',
       hint: 'Smaller = the same people packed closer around you', fmt: v => v + ' m' },
-    { k: 'vehicles', t: 'range', min: 0, max: 120, step: 2, label: 'Vehicles', hint: 'Cars navigating and parking on their own' }
+    { k: 'vehicles', t: 'range', min: 0, max: 160, step: 2, label: 'Vehicles', hint: 'Cars navigating and parking on their own — they stream to stay near you' },
+    { k: 'trafficRadius', t: 'range', min: 150, max: 900, step: 10, label: 'Traffic radius',
+      hint: 'Smaller = the same cars packed onto the streets around you', fmt: v => v + ' m' }
   ],
   crime: [
     { grp: 'How much crime' },

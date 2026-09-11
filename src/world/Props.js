@@ -43,6 +43,7 @@ export class PropSystem {
   regrab (it) {
     if (!it) return null;
     it.state = 'held';
+    it._audioInWater = false;
     it.smashed = false;
     it.vel.set(0, 0, 0);
     return it;
@@ -56,7 +57,9 @@ export class PropSystem {
   launch (it, dir, power) {
     if (!it || it.restT > 0) return;
     it.state = 'thrown';
+    it._audioInWater = false;
     it.bounces = 0;
+    this.world.audio?.play('whoosh', it.pos, .65);
     it.vel.copy(dir).multiplyScalar(power / it.mass);
     if (it.vel.y < 2) it.vel.y += 3;
     it.angVel.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).normalize().multiplyScalar(rand(4, 9));
@@ -66,14 +69,15 @@ export class PropSystem {
   drop (it) {
     if (!it) return;
     it.state = 'thrown';
+    it._audioInWater = false;
     it.vel.set(0, 0, 0);
   }
 
   _smash (it) {
     const fx = this.world.effects;
-    const col = it.kind === 'tree' ? '#4e7a3e' : '#8b939c';
+    const col = it.kind === 'tree' || it.kind === 'bush' ? '#4e7a3e' : it.kind === 'rock' ? '#9a9385' : '#8b939c';
     fx.burst(it.pos, col, 20, 8, 0.45, 0.6, { grav: -9, drag: 0.9 });
-    fx.spawnDebris(it.pos, it.kind === 'tree' ? '#4a3826' : '#5a6068', 7, 8, 0.26);
+    fx.spawnDebris(it.pos, it.kind === 'tree' ? '#4a3826' : it.kind === 'bush' ? '#3a5a2c' : '#5a6068', 7, 8, 0.26);
     if (it.kind === 'lamp') fx.burst(it.pos, '#ffd9a0', 12, 9, 0.35, 0.4);
     this.world.player.cam?.addShake(0.16);
 
@@ -108,7 +112,18 @@ export class PropSystem {
     for (const it of this.items) {
       it.age += dt;
       it.restT = Math.max(0, it.restT - dt);
-      if (it.state === 'settled') continue;
+      if (it.state === 'settled') {
+        // nothing rests on water: whatever landed in it sinks and is gone
+        if (city.isWater(it.pos.x, it.pos.z)) {
+          const wl = city.waterLevel(it.pos.x, it.pos.z);
+          if (city.groundHeight(it.pos.x, it.pos.z, it.pos.y + 1) <= wl + 0.05) {
+            it.pos.y -= 0.9 * dt;
+            it.group.position.copy(it.pos);
+            if (it.pos.y < wl - 5) { this.world.scene.remove(it.group); this.items.splice(this.items.indexOf(it), 1); }
+          }
+        }
+        continue;
+      }
 
       if (it.state === 'held') {
         const ang = it.angVel.length() * dt;
@@ -140,7 +155,9 @@ export class PropSystem {
         }
 
         // bounce off walls rather than sailing through them
+        _v.copy(it.vel);
         if (city.bounceMoving(it.pos, it.vel, it.radius * 0.7, 0.35)) {
+          this.world.audio?.collision(it.kind, it.pos, _v.sub(it.vel).length(), it.mass, it);
           it.bounces = (it.bounces || 0) + 1;
           it.angVel.multiplyScalar(0.7);
           if (!it.smashed) { it.smashed = true; this._smash(it); }
@@ -151,6 +168,9 @@ export class PropSystem {
         if (it.pos.y <= g) {
           it.pos.y = g;
           const impact = -it.vel.y;
+          const inWater = city.isWater(it.pos.x, it.pos.z) && g - it.radius * .35 <= city.waterLevel(it.pos.x, it.pos.z) + .05;
+          if (!inWater || !it._audioInWater) this.world.audio?.collision(inWater ? 'water' : it.kind, it.pos, impact, it.mass, it);
+          it._audioInWater = inWater;
           it.bounces = (it.bounces || 0) + 1;
           if (impact > 4 && it.bounces < 3) {
             it.vel.y = impact * 0.3;

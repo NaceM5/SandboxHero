@@ -1,0 +1,32 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eastbank homes</title>
+<style>body{margin:0;background:#ccd8df;color:#24323b;font:15px system-ui}header{position:absolute;top:20px;left:24px;z-index:1;background:#ffffffed;padding:18px 22px;border-radius:12px;box-shadow:0 6px 24px #0002}h1{font-size:22px;margin:0 0 5px}p{margin:5px 0 14px;color:#59666b;font-size:13px}select,button{padding:8px 12px;border:1px solid #bac5c5;border-radius:6px;background:white;color:#263936;cursor:pointer}canvas{display:block}</style>
+<header><h1>Three homes on Eastbank</h1><p>Three different parts of Eastbank. Choose a house to visit its street.</p><select id="home" aria-label="House"></select> <button id="exterior">Driveway</button> <button id="plan">Floor plan</button> <button id="inside">Living room</button><p id="status"></p></header>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {createMapData} from '../src/world/tideline/map-data.js';
+import {buildWorld} from '../src/world/tideline/world.js';
+import {SurfaceField} from '../src/world/Terrain.js';
+const data=createMapData(),homes=data.residences;
+data.boxes=data.boxes.filter(b=>homes.some(h=>Math.hypot(b.x-h.x,b.z-h.z)<120));data.ramps=[];
+const world=buildWorld(data,{collision:false,water:false}),scene=new THREE.Scene();scene.background=new THREE.Color('#ccd8df');scene.add(world.group);
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.toneMapping=THREE.ACESFilmicToneMapping;document.body.append(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xe2f3ff,0x858073,2.5));const sun=new THREE.DirectionalLight(0xffedcc,3);sun.position.set(500,700,500);scene.add(sun);
+const camera=new THREE.PerspectiveCamera(52,innerWidth/innerHeight,.08,8000),controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
+const select=document.querySelector('#home');homes.forEach((h,i)=>select.add(new Option(h.name,i)));
+const terrain=new SurfaceField(16);for(const t of world.terrains)terrain.addGeometry(t.geometry);
+let checks=0;
+for(const h of homes){const c=Math.cos(h.rotation),s=Math.sin(h.rotation);for(let x=-h.w/2+.4;x<h.w/2;x+=.8)for(let z=-h.d/2+.4;z<h.d/2;z+=.8){const y=terrain.heightAt(h.x+c*x+s*z,h.z-s*x+c*z);if(y>h.floor+.001)throw Error(h.name+' terrain above interior floor');checks++;}}
+for(const h of homes){const [a,b]=h.driveway.points,dx=b[0]-a[0],dz=b[1]-a[1],len=Math.hypot(dx,dz);for(let i=0;i<=30;i++)for(const side of [-1,0,1]){const t=i/30,offset=side*(h.driveway.width/2-.05),x=a[0]+dx*t-dz/len*offset,z=a[1]+dz*t+dx/len*offset,y=a[2]+(b[2]-a[2])*t;if(terrain.heightAt(x,z)>y+.001)throw Error(h.name+' terrain above driveway');checks++;}}
+function view(mode='exterior'){
+ const h=homes[+select.value],c=Math.cos(h.rotation),s=Math.sin(h.rotation),at=(x,y,z)=>new THREE.Vector3(h.x+c*x+s*z,h.floor+y,h.z-s*x+c*z);
+ for(const mesh of world.group.children)if(['roofSlate','roofTile','roofMetal','interiorRoof'].includes(mesh.name))mesh.visible=mode!=='plan';
+ if(mode==='plan'){camera.position.copy(at(0,32,5));controls.target.copy(at(0,0,0));}
+ else if(mode==='inside'){camera.position.copy(at(-1.5,1.75,h.d/2-1));controls.target.copy(at(-h.w/2+1,1.25,h.d/2-4));}
+ else{camera.position.copy(at(-22,13,h.d/2+26));controls.target.copy(at(0,1.4,h.d/2-2));}
+ controls.update();document.querySelector('#status').textContent=`${h.name} · ${h.street} · 5 furnished spaces · 5.4 m driveway · ${checks} rendered terrain checks passed`;
+}
+select.onchange=()=>view();document.querySelector('#exterior').onclick=()=>view();document.querySelector('#plan').onclick=()=>view('plan');document.querySelector('#inside').onclick=()=>view('inside');view();
+renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera)});addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+</script></html>

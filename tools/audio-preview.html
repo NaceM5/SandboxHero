@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sandbox Hero · Sound check</title>
+<style>
+body{font:16px system-ui;background:#111820;color:#e8f0f8;max-width:880px;margin:60px auto;padding:0 24px}h1{font-size:32px;margin-bottom:8px}p{color:#aabaca;line-height:1.6}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:28px 0}button{font:inherit;background:#223548;color:#eef7ff;border:1px solid #3a5268;padding:18px;border-radius:12px;cursor:pointer;text-align:left}button:hover,button[aria-pressed=true]{background:#315778;border-color:#82c5fb}label{display:flex;gap:16px;align-items:center}input{width:240px;accent-color:#82c5fb}a{color:#82c5fb}#status{min-height:26px}small{color:#aabaca}
+</style>
+<h1>Sound check</h1>
+<p>The game’s Uppbeat recordings, with the same volume, variation and processing used during play. Click any effect to listen.</p>
+<label>Volume <input id="volume" type="range" min="0" max="1" step="0.05" value="0.7"><output id="level">70%</output></label>
+<div id="cues" class="grid"></div>
+<small>Continuous sounds · click again to stop</small>
+<div class="grid"><button data-loop="flight" aria-pressed="false">Flight wind</button><button data-loop="engine" aria-pressed="false">Car engine</button><button data-loop="beam" aria-pressed="false">Laser beam</button></div>
+<small>Environment · click a location to hear its ambience</small>
+<div class="grid"><button data-ambient="city" aria-pressed="false">City street</button><button data-ambient="ocean" aria-pressed="false">Shoreline</button><button data-ambient="birds" aria-pressed="false">Woodland</button></div>
+<p id="status">Ready to load recordings.</p>
+<p><a href="/">Back to game</a> · <a href="/assets/audio/README.md">Sources and license records</a></p>
+<script type="module">
+import { GameAudio, CUES } from '../src/fx/Audio.js';
+const settings={soundVolume:.7,soundMuted:false,ambienceVolume:0};
+const world={settings:{get:k=>settings[k]},input:{locked:true},menu:{open:false},cameraRig:{yaw:0},player:{pos:{x:0,y:0,z:0},vel:{length:()=>85},flying:false,powerIndex:0},effects:{beams:[]}};
+const audio = window.audio = new GameAudio(world);
+const names={impact:'Punch · 3 variations',blast:'Explosion',boom:'Sonic boom',shot:'Energy blast',gun:'Gunshot',whoosh:'Punch miss',jump:'Jump',takeoff:'Flight takeoff',land:'Soft landing',heroLand:'Hero landing',step:'Footsteps · 2 variations',hurt:'Damage',transform:'Transformation',success:'Crime stopped',select:'Power selection'};
+async function ready(){audio.unlock();await audio.ready;audio.update(.016);document.querySelector('#status').textContent=audio.failed.length?`Failed: ${audio.failed.join(', ')}`:`${audio.buffers.size} recordings loaded.`;}
+Object.assign(names,{metalCrash:'Metal crash',woodCrash:'Wood crash',stoneCrash:'Rock & rubble',carCrash:'Car collision',splash:'Water impact'});
+for(const name of Object.keys(CUES)){const b=document.createElement('button');b.textContent=names[name];b.onclick=async()=>{await ready();audio.play(name)};document.querySelector('#cues').append(b);}
+document.querySelector('#volume').oninput=e=>{settings.soundVolume=+e.target.value;document.querySelector('#level').textContent=Math.round(settings.soundVolume*100)+'%'};
+for(const b of document.querySelectorAll('[data-loop]'))b.onclick=async()=>{await ready();const on=b.getAttribute('aria-pressed')!=='true';b.setAttribute('aria-pressed',String(on));if(b.dataset.loop==='flight')world.player.flying=on;if(b.dataset.loop==='engine')world.player.vehicle=on?{speed:30}:null;if(b.dataset.loop==='beam')world.effects.beams=on?[{live:true,persistent:true}]:[]};
+for(const b of document.querySelectorAll('[data-ambient]'))b.onclick=async()=>{await ready();const on=b.getAttribute('aria-pressed')!=='true';for(const other of document.querySelectorAll('[data-ambient]'))other.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed',String(on));settings.ambienceVolume=on?.65:0;audio.environment={urban:b.dataset.ambient==='city'?1:0,shore:b.dataset.ambient==='ocean'?1:0,land:b.dataset.ambient==='birds'?1:0,height:0,sheltered:false};};
+function tick(){audio.update(.016);requestAnimationFrame(tick)}tick();
+</script>
+</html>

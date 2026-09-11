@@ -211,6 +211,22 @@ A.fall = clip(1.5, true, [
   })
 ]);
 
+// Free-fall tuck-and-roll. The somersault itself is the whole body turning
+// over, driven by the player controller; this is just the ball it curls into
+// and back out of.
+const TUCK = {
+  chest: [0.62, 0, 0], head: [0.55, 0, 0],
+  thighL: [-2.25, 0, 0.16], thighR: [-2.25, 0, -0.16], shinL: [2.45, 0, 0], shinR: [2.45, 0, 0],
+  footL: [0.45, 0, 0], footR: [0.45, 0, 0],
+  armL: [-1.55, 0, 0.32], armR: [-1.55, 0, -0.32], forearmL: [-2.0, 0, 0.15], forearmR: [-2.0, 0, -0.15]
+};
+A.tuckRoll = clip(1.25, false, [
+  K(0.0, A.fall.keys[0].pose),
+  K(0.24, TUCK),
+  K(0.92, TUCK),
+  K(1.25, A.fall.keys[0].pose)
+]);
+
 A.land = clip(0.46, false, [
   K(0.0, {
     chest: [-0.34, 0, 0], head: [0.30, 0, 0],

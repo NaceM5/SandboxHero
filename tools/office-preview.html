@@ -1,0 +1,25 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Harbor Exchange</title>
+<style>body{margin:0;font:15px system-ui;color:#e7eef1}header{position:absolute;top:18px;left:22px;padding:18px 22px;background:#152c39ec;border-radius:10px;z-index:1}h1{font-size:23px;margin:0 0 10px}p{font-size:13px}button{padding:9px 14px;background:#eef4f3;border:0;border-radius:5px;margin-right:5px;cursor:pointer}canvas{display:block}</style>
+<header><h1>Harbor Exchange</h1><p>Downtown · south entrance · lobby and office floor 4</p><button id="entrance">Street entrance</button><button id="lift">Lobby elevator</button><button id="use">Use elevator (E)</button><button id="office">Office overview</button><p id="status">Loading…</p></header>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {createMapData} from '../src/world/tideline/map-data.js';import {buildWorld} from '../src/world/tideline/world.js';import {useElevator,ElevatorPrompt} from '../src/world/Elevators.js';
+const data=createMapData(),o=data.offices.find(o=>o.id===new URLSearchParams(location.search).get('building'))??data.office;
+document.querySelector('h1').textContent=o.name;document.title=o.name;document.querySelector('header p').textContent=`Downtown · ${o.direction<0?'north':'south'} entrance · lobby and office floor ${o.floor}`;data.boxes=data.boxes.filter(b=>b.officeId||Math.hypot(b.x-o.x,b.z-o.z)<90);data.ramps=[];
+const scene=new THREE.Scene();scene.background=new THREE.Color('#b5c9d4');scene.add(buildWorld(data,{collision:false,water:false}).group);
+scene.add(new THREE.HemisphereLight(0xd8efff,0x8f8375,2.8));const sun=new THREE.DirectionalLight(0xffebc7,2);sun.position.set(o.x+30,140,o.z+70);scene.add(sun);
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.toneMapping=THREE.ACESFilmicToneMapping;document.body.append(renderer.domElement);
+const camera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,.08,4000),controls=new OrbitControls(camera,renderer.domElement);
+const status=document.querySelector('#status'),player={pos:new THREE.Vector3(),vel:new THREE.Vector3(),holder:{position:new THREE.Vector3()},grounded:true};
+const world={player,city:{data},cameraRig:{},notify(text){status.textContent=text;}};const prompt=new ElevatorPrompt(world);
+function eye(){camera.position.copy(player.pos).add(new THREE.Vector3(0,1.75,0));controls.target.copy(camera.position).add(new THREE.Vector3(0,-.08,7*o.direction));controls.update();prompt.update();}
+function lift(){player.pos.fromArray(o.lift);eye();status.textContent=`Ground floor · inside the elevator · press E to travel to office floor ${o.floor}`;}
+function travel(){if(useElevator(world)){eye();status.textContent=player.pos.y===o.officeFloor?`Arrived at office floor ${o.floor} · press E to return to the lobby`:'Returned to ground floor lobby · press E to go upstairs';}else status.textContent='Select Lobby elevator, then press E.';}
+document.querySelector('#lift').onclick=lift;document.querySelector('#use').onclick=travel;
+document.querySelector('#entrance').onclick=()=>{player.pos.fromArray(o.entrance);camera.position.set(o.x+9*o.direction,12,o.entrance[2]+18*o.direction);controls.target.set(o.x,10,o.z+8*o.direction);controls.update();prompt.update();status.textContent=`${o.direction<0?'North':'South'} entrance · ${o.name}`;};
+document.querySelector('#office').onclick=()=>{player.pos.fromArray(o.workstations);camera.position.set(o.x+o.direction,officeHeight(),o.z+16*o.direction);controls.target.set(o.x-10*o.direction,o.officeFloor+1.2,o.z-o.direction);controls.update();prompt.update();status.textContent=`Floor ${o.floor} · workstations, meeting room and break area`;};
+function officeHeight(){return o.officeFloor+2.3;}
+addEventListener('keydown',e=>{if(e.code==='KeyE'&&!e.repeat)travel();});lift();
+renderer.setAnimationLoop(()=>renderer.render(scene,camera));addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+</script></html>

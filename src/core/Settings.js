@@ -4,17 +4,23 @@
 const KEY = 'sandboxhero.settings.v1';
 
 export const DEFAULTS = {
+  soundVolume: 0.7,
+  ambienceVolume: 0.65,
+  musicVolume: 0.5,
+  radioVolume: 0.6,
+  soundMuted: false,
   // ---- world ----
-  timeOfDay: 0.66,        // 0 midnight -> .25 sunrise -> .5 noon -> .75 sunset
-  pedestrians: 190,
-  crowdRadius: 205,       // civilians are recycled to stay within this range
-  vehicles: 48,
+  timeOfDay: 17.5 / 24,   // 17:30 — 0 midnight -> .25 sunrise -> .5 noon -> .75 sunset
+  pedestrians: 220,
+  crowdRadius: 230,       // civilians are recycled to stay within this range
+  vehicles: 64,
+  trafficRadius: 420,     // cars are recycled to stay within this range
   bloom: 0.8,
-  exposure: 1.18,
-  ambient: 0.35,          // flat fill so nothing reads as pure black
+  exposure: 0.95,
+  ambient: 0.15,          // flat fill so nothing reads as pure black
   brightMode: false,      // lifts shadows + haze for maximum visibility
   renderScale: 1.0,
-  drawDistance: 1400,
+  drawDistance: 3200,
 
   // ---- crime ----
   crimeDensity: 0.5,      // how much crime the city generates

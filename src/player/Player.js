@@ -4,11 +4,12 @@ import { Animator } from '../char/Animator.js';
 import { Cape } from '../char/Cape.js';
 import { makePowers } from '../powers/Powers.js';
 import { clamp, lerp, smooth, rand, angleDelta, approachAngle } from '../core/Util.js';
-import { CITY } from '../world/RoadNetwork.js';
+import { WORLD } from '../world/Map.js';
 
-const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3(), _v4 = new THREE.Vector3();
 const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion();
 const _e2 = new THREE.Euler(0, 0, 0, 'YXZ');
+const TUCK_DUR = 1.25;           // seconds for a free-fall tuck-and-roll
 const ROLL_WHIP = 3.2;    // rad/s of view whip that commits to a barrel roll
 const _m3 = new THREE.Matrix4();
 const UP = new THREE.Vector3(0, 1, 0);
@@ -46,6 +47,7 @@ export class Player {
     this.bank = 0;
     this.flightBlend = 0;
     this.diveBlend = 0;
+    this.tuckT = 0; this.tuckCool = 0; this.tuckDir = 1;   // free-fall somersault
     this.breach = 0;
     this.rollT = 0;
     this.rollDur = 0.52;
@@ -229,6 +231,9 @@ export class Player {
     let best = range;
     const hit = this.world.city.raycastBuildings(o, d, range);
     if (hit) best = hit.dist;
+    // aircraft are solid to a beam too
+    const air = this.world.scenarios?.rayHit(o, d, best);
+    if (air) best = air.dist;
     // Stop where the ray meets the ground it is actually over. A fixed
     // sea-level plane is right only in the street: aiming down from a rooftop,
     // a ship's deck or the penthouse it cuts the ray off at y = 0, far below
@@ -324,6 +329,8 @@ export class Player {
 
   dealDamage (actor, amount, dir, knock = 0, silent = false, up = 0.45, hitY = 1.35) {
     if (!actor || actor.dead) return;
+    // hurting a battle's own people — a scenario crew, the carrier's guards — is what starts the music
+    if (actor.garrison || actor.crime?.external) this.world.audio?.engage();
     const killed = actor.damage(amount, this);
     if (knock > 0) actor.applyKnockback(dir, knock, up, hitY);
     if (!silent) {
@@ -357,6 +364,7 @@ export class Player {
       skip: tgt, color: s.color
     });
     any = any || hit > 0;
+    this.world.audio.play(any ? 'impact' : 'whoosh', origin);
 
     const fx = this.world.effects;
     if (any) {
@@ -417,9 +425,9 @@ export class Player {
     const v = this.world.traffic.nearest(this.pos, 5.5,
       x => x.state !== 'wrecked' && x.state !== 'held' && x.state !== 'thrown' && x.driver !== 'player');
     if (!v) { this.world.notify('No vehicle in reach'); return; }
-    const wasNpc = v.driver === 'npc';
+    const wasNpc = v.driver === 'npc' && !v.playerParked;
     this.world.traffic.hijack(v, 'player', (veh) => {
-      const p = this.world.spawnPedestrian(veh.pos.x + rand(-2.5, 2.5), veh.pos.z + rand(-2.5, 2.5));
+      const p = this.world.spawnPedestrian(veh.pos.x + rand(-2.5, 2.5), veh.pos.z + rand(-2.5, 2.5), veh.pos.y);
       p?.panic(this.pos, 1);
     });
     this.vehicle = v;
@@ -436,7 +444,7 @@ export class Player {
     this.pos.y = this.world.city.groundHeight(this.pos.x, this.pos.z, this.pos.y + 2);
     this.heading = v.heading;
     this.vel.set(0, 0, 0);
-    this.world.traffic.release(v);
+    this.world.traffic.release(v, true);      // stays where you left it
     this.vehicle = null;
     this.holder.visible = true;
     if (this.cape) { this.cape.setVisible(this.suited && this.settings.get('suit.cape')); this.cape.reset(); }
@@ -450,6 +458,7 @@ export class Player {
       this.world.notify('Flight requires the PARAGON powerset');
       return;
     }
+    this.world.audio.play('takeoff');
     this.flying = true;
     this.grounded = false;
     this.slamDive = false;
@@ -529,25 +538,91 @@ export class Player {
     const cur = this.vel.length();
     if (cur > maxSpeed) this.vel.setLength(Math.max(maxSpeed, cur - 46 * dt));
 
-    this.pos.addScaledVector(this.vel, dt);
+    // Move in sub-metre steps. A sprint covers two metres a frame, enough to
+    // skip clean through a floor slab, a thin interior wall or the face of a
+    // hill between one collision test and the next.
+    const city = this.world.city;
+    const travel = this.vel.length() * dt;
+    const steps = clamp(Math.ceil(travel / 0.9), 1, 8);
+    const sdt = dt / steps;
+    let g = this.groundY, landed = false;
+    for (let s = 0; s < steps; s++) {
+      const prevX = this.pos.x, prevY = this.pos.y, prevZ = this.pos.z;
+      this.pos.addScaledVector(this.vel, sdt);
+      if (this.pos.y > WORLD.CEILING) { this.pos.y = WORLD.CEILING; this.vel.y = Math.min(this.vel.y, 0); }
 
-    // ceiling & floor
-    if (this.pos.y > 800) { this.pos.y = 800; this.vel.y = Math.min(this.vel.y, 0); }
-    const g = this.world.city.groundHeight(this.pos.x, this.pos.z, this.pos.y + 0.5);
-    this.groundY = g;
-    // Some powersets treat flight as the state you live in: flying into the
-    // ground skims along it rather than putting you down, and the only ways
-    // out are holding descend all the way to the floor, the flight toggle, or
-    // a double tap of jump — all of which are handled in update().
-    if (this.pos.y <= g + 0.06 && this.power?.stickyFlight && !input.down && !this.slamDive) {
-      this.pos.y = g + 0.06;
-      this.vel.y = Math.max(this.vel.y, 0);
-      if (this.speed > 14) {
-        this.world.effects.burst(this.pos, '#cfd6e0', 5, 6, 0.3, 0.25, { grav: -6 });
+      // ceilings: the underside of a storey or a roof is a hard stop from below
+      const ceil = city.ceilingHeight(this.pos.x, this.pos.z, prevY + 0.25);
+      if (ceil !== null && this.pos.y + this.height > ceil - 0.05) {
+        this.pos.y = Math.min(prevY, ceil - this.height - 0.05);
+        if (this.vel.y > 0) this.vel.y = 0;
       }
-    } else if (this.pos.y <= g + 0.06) {
-      this.pos.y = g;
+
+      g = city.groundHeight(this.pos.x, this.pos.z, this.pos.y + 0.5);
+      // Well inside the ground after one short step means the ground rose
+      // faster than we could follow it — a hillside or a cliff face, not a
+      // floor. Treat it as a wall: stay where we were and lose the speed,
+      // rather than popping up through it onto the top.
+      if (this.pos.y < g - 1.0 && Math.hypot(this.vel.x, this.vel.z) > 4) {
+        this.pos.set(prevX, prevY, prevZ);
+        g = city.groundHeight(prevX, prevZ, prevY + 0.5);
+        if (this.speed > 30) {
+          this.world.effects.burst(this.pos, '#b9b19f', 18, 10, 0.4, 0.35, { grav: -8 });
+          this.cam.addShake(0.35);
+        }
+        this.vel.x *= -0.12; this.vel.z *= -0.12;
+        this.vel.y = Math.max(this.vel.y, 0) * 0.3;
+        break;
+      }
+      // Some powersets treat flight as the state you live in: flying into the
+      // ground skims along it rather than putting you down, and the only ways
+      // out are holding descend all the way to the floor, the flight toggle, or
+      // a double tap of jump — all of which are handled in update().
+      if (this.pos.y <= g + 0.06 && this.power?.stickyFlight && !input.down && !this.slamDive) {
+        this.pos.y = g + 0.06;
+        this.vel.y = Math.max(this.vel.y, 0);
+        if (this.speed > 14 && s === 0) {
+          this.world.effects.burst(this.pos, '#cfd6e0', 5, 6, 0.3, 0.25, { grav: -6 });
+        }
+      } else if (this.pos.y <= g + 0.06) {
+        this.pos.y = g;
+        landed = true;
+        break;
+      }
+
+      // buildings
+      const before = _v1.copy(this.pos);
+      if (city.resolveCollision(this.pos, this.radius + 0.25, this.pos.y, this.pos.y + this.height)) {
+        const push = _v2.copy(this.pos).sub(before);
+        if (push.lengthSq() > 1e-6) {
+          push.normalize();
+          const into = this.vel.dot(push);
+          if (into < 0) this.vel.addScaledVector(push, -into * 1.25);
+          // hitting the wall, not brushing it: the speed straight into it decides
+          if (into < -9) this.world.audio?.play('slam', this.pos, clamp(-into / 40, 0.3, 1.4));
+          // whoever you are carrying meets the wall first, at the speed you
+          // were doing — read here, before the wall has taken it away
+          const held = this.power?.held;
+          if (into < -12 && held?.kind === 'actor' && !held.ref.dead) {
+            const f = Math.min(-into, 70);
+            this.dealDamage(held.ref, f * 1.9 * this.strength, push, 0, false, 0, 1.2);
+            this.world.effects.burst(held.ref.pos, '#ffd9a0', 14, 8, 0.4, 0.35, { grav: -6 });
+            this.world.audio?.contacts.delete(held.ref);
+            this.world.audio?.voice(held.ref, 1.3, .8);
+            if (this.power.crashT !== undefined) this.power.crashT = 0.45;
+          }
+          if (this.speed > 30) {
+            this.world.effects.burst(this.pos, '#cfd6e0', 16, 10, 0.4, 0.35, { grav: -8 });
+            this.cam.addShake(0.30);
+          }
+          this.vel.multiplyScalar(0.72);
+        }
+      }
+    }
+    this.groundY = g;
+    if (landed) {
       const impact = -this.vel.y;
+        if (impact <= 22) this.world.audio.play('land', null, impact / 15);
       this.stopFlight();
       this.grounded = true;
       this.vel.y = 0;
@@ -565,22 +640,6 @@ export class Player {
       return;
     }
 
-    // buildings
-    const before = _v1.copy(this.pos);
-    if (this.world.city.resolveCollision(this.pos, this.radius + 0.25, this.pos.y, this.pos.y + this.height)) {
-      const push = _v2.copy(this.pos).sub(before);
-      if (push.lengthSq() > 1e-6) {
-        push.normalize();
-        const into = this.vel.dot(push);
-        if (into < 0) this.vel.addScaledVector(push, -into * 1.25);
-        if (this.speed > 30) {
-          this.world.effects.burst(this.pos, '#cfd6e0', 16, 10, 0.4, 0.35, { grav: -8 });
-          this.cam.addShake(0.30);
-        }
-        this.vel.multiplyScalar(0.72);
-      }
-    }
-
     /* ---- orientation: build a basis from the travel direction ---- */
     const sp = this.vel.length();
     // Upright until genuinely travelling *horizontally*, then tip into the
@@ -589,8 +648,13 @@ export class Player {
     const hsp = Math.hypot(this.vel.x, this.vel.z);
     // Only a SPRINT flight tips the hero head-first. A normal flight stays
     // upright and levitates along, however fast it happens to be travelling —
-    // the two read as completely different ways of flying.
-    const blendTarget = boosting ? clamp((hsp - 32) / 34, 0, 1) : 0;
+    // the two read as completely different ways of flying. A dive is the
+    // exception: dropping fast, sprint or not, goes head-first — which
+    // straight down means upside down.
+    const diveSp = Math.max(0, -this.vel.y);
+    const blendTarget = Math.max(
+      boosting ? clamp((Math.hypot(hsp, diveSp) - 32) / 34, 0, 1) : 0,
+      clamp((diveSp - 16) / 20, 0, 1));
     this.flightBlend = smooth(this.flightBlend, blendTarget, 7 * dt);
 
     let dir;
@@ -644,9 +708,18 @@ export class Player {
     // head-first orientation: local +Y along travel, rolled by bank
     const yAxis = _v2.copy(dir);
     const xAxis = _v3.copy(UP).cross(yAxis);
+    // Near vertical the world-up reference degenerates and the pose would
+    // spin about the travel axis; hand the roll reference over to the camera
+    // so a straight dive keeps the hero's face turned the way you are looking.
+    const vertical = clamp((Math.abs(dir.y) - 0.85) / 0.12, 0, 1);
+    if (vertical > 0) {
+      const camRight = this.cam.right(_v4);
+      if (xAxis.lengthSq() > 1e-6) xAxis.normalize().lerp(camRight, vertical); else xAxis.copy(camRight);
+    }
     if (xAxis.lengthSq() < 1e-4) xAxis.set(1, 0, 0);
     xAxis.normalize();
     const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+    xAxis.crossVectors(yAxis, zAxis).normalize();     // re-square the frame after the blend
     const roll = this.bank + this.rollAngle;
     const cb = Math.cos(roll), sb = Math.sin(roll);
     const xr = xAxis.clone().multiplyScalar(cb).addScaledVector(zAxis, sb);
@@ -702,7 +775,7 @@ export class Player {
     this.actionLock = 0.65;
     const r = clamp(impact * 0.32, 4, 22);
     const fx = this.world.effects;
-    fx.shockwave(this.pos, this.suited ? this.power.color : '#cfd6e0', r, 0.5);
+    fx.shockwave(this.pos, this.suited ? this.power.color : '#cfd6e0', r, 0.5, 'heroLand');
     fx.burst(this.pos, '#c8b89a', 26, 12, 0.5, 0.6, { grav: -12 });
     fx.spawnDebris(this.pos, '#5a5f68', 7, 8, 0.24);
     this.cam.addShake(clamp(impact * 0.014, 0.2, 0.8));
@@ -728,7 +801,8 @@ export class Player {
     // swimmer's torso sits at roughly pos.y + 1. Putting the feet just under
     // the waterline therefore leaves the whole body out of the water, crawling
     // across the top of it; the float height has to account for that offset.
-    const surface = CITY.WATER_Y - 1.18;
+    const waterY = this.world.city.waterLevel(this.pos.x, this.pos.z);
+    const surface = waterY - 1.18;
     const sprint = input.sprint;
     const speed = (sprint ? 7.0 * s.get('sprintSpeed') : 3.4 * s.get('jogSpeed'));
 
@@ -755,14 +829,14 @@ export class Player {
     this.vel.y = smooth(this.vel.y, (surface - this.pos.y) * 3.5 + lift, 8 * dt);
     if (this.breach > 0) { this.breach -= dt; this.vel.y = Math.max(this.vel.y, 7.5); }
     this.pos.addScaledVector(this.vel, dt);
-    this.pos.y = Math.max(this.pos.y, CITY.WATER_Y - 2.0);
+    this.pos.y = Math.max(this.pos.y, waterY - 2.0);
 
     this.world.city.resolveCollision(this.pos, this.radius, this.pos.y - 0.4, this.pos.y + 1.2);
 
     // wake
     if (this.speed > 1.2 && Math.random() < dt * 26) {
       this.world.effects.particle(
-        this.pos.x + rand(-0.5, 0.5), CITY.WATER_Y + 0.05, this.pos.z + rand(-0.5, 0.5),
+        this.pos.x + rand(-0.5, 0.5), waterY + 0.05, this.pos.z + rand(-0.5, 0.5),
         rand(-0.6, 0.6), rand(0.4, 1.6), rand(-0.6, 0.6),
         '#cfe8f2', rand(0.25, 0.55), rand(0.35, 0.7), { grav: -4, drag: 0.9 }
       );
@@ -773,7 +847,7 @@ export class Player {
     const ahead = _v1.set(this.pos.x + Math.sin(this.heading) * 1.5, 0,
       this.pos.z + Math.cos(this.heading) * 1.5);
     const gh = this.world.city.groundHeight(ahead.x, ahead.z, this.pos.y + 2.4);
-    if (gh > CITY.WATER_Y + 0.1 && gh < this.pos.y + 2.2) {
+    if (gh > waterY + 0.1 && gh < this.pos.y + 2.2) {
       this.pos.x = ahead.x; this.pos.z = ahead.z;
       this.pos.y = gh;
       this.exitWater();
@@ -790,12 +864,13 @@ export class Player {
 
   enterWater () {
     if (this.swimming) return;
+    this.world.audio?.play('splash', this.pos, clamp(Math.abs(this.vel.y) / 18, .35, 1.2));
     this.swimming = true;
     this.breach = 0;
     this.stopFlight();
     this.grounded = false;
     this.vel.y = Math.max(this.vel.y, -4);
-    const c = _v1.copy(this.pos); c.y = CITY.WATER_Y;
+    const c = _v1.copy(this.pos); c.y = this.world.city.waterLevel(this.pos.x, this.pos.z);
     this.world.effects.burst(c, '#dff2fb', 34, 9, 0.5, 0.8, { grav: -7, drag: 0.9 });
     this.world.effects.ring(c, '#cfe8f2', 0.5, 7, 0.6);
     this.cam.addShake(0.2);
@@ -854,6 +929,7 @@ export class Player {
 
     // jump
     if (input.jumpPressed && (this.grounded || this.coyote > 0) && this.actionLock <= 0) {
+      this.world.audio.play('jump');
       this.vel.y = 10.6 * s.get('jumpPower');
       this.grounded = false;
       this.coyote = 0;
@@ -870,7 +946,17 @@ export class Player {
     }
     this.vel.y -= GRAVITY * gscale * dt;
     if (!this.grounded && input.up && this.vel.y < -14) this.vel.y = -14;   // terminal glide
+    const prevY = this.pos.y;
     this.pos.addScaledVector(this.vel, dt);
+
+    // a jump under a floor slab or a canopy stops at it instead of passing through
+    if (this.vel.y > 0) {
+      const ceil = this.world.city.ceilingHeight(this.pos.x, this.pos.z, prevY + 0.25);
+      if (ceil !== null && this.pos.y + this.height > ceil - 0.05) {
+        this.pos.y = Math.min(prevY, ceil - this.height - 0.05);
+        this.vel.y = 0;
+      }
+    }
 
     const g = this.world.city.groundHeight(this.pos.x, this.pos.z, this.pos.y + 1.2);
     this.groundY = g;
@@ -879,6 +965,7 @@ export class Player {
       this.pos.y = g;
       if (!wasGrounded) {
         const impact = -this.vel.y;
+        if (impact <= 22) this.world.audio.play('land', null, impact / 15);
         if (impact > 22 && this.suited) this.heroLanding(impact);
         else if (impact > 6) { this.anim.play('land', { fade: 0.08 }); this.actionLock = 0.18; }
         this.world.effects.burst(this.pos, '#c9d3de', clamp(impact * 0.4, 3, 20), 5, 0.3, 0.3, { grav: -8 });
@@ -907,9 +994,9 @@ export class Player {
     // a stride's worth of step-up, so stairs and kerbs are climbable
     this.world.city.resolveCollision(this.pos, this.radius, this.pos.y, this.pos.y + this.height,
       false, this.grounded ? 0.55 : 0.2);
-    const lim = 900 + 220;
-    this.pos.x = clamp(this.pos.x, -lim, lim);
-    this.pos.z = clamp(this.pos.z, -lim, lim);
+    const B = WORLD.BOUNDS;
+    this.pos.x = clamp(this.pos.x, B.minX, B.maxX);
+    this.pos.z = clamp(this.pos.z, B.minZ, B.maxZ);
 
     /* ---- falling fast and flat reads as a dive ---- */
     // Not flight — this is free fall. Once you're moving at sprint-flight
@@ -928,7 +1015,31 @@ export class Player {
     const diveTarget = this.grounded ? 0 : fastEnough * Math.pow(shaped, 0.72);
     this.diveBlend = smooth(this.diveBlend, diveTarget, 6.5 * dt);
 
-    if (this.diveBlend > 0.02) {
+    /* ---- the occasional tuck-and-roll in a free fall ---- */
+    // A long, near-vertical fall gets a somersault now and then: curl up,
+    // turn right over, open out again. Never while diving, flying, swimming or
+    // in a car, and it stops the moment the ground arrives.
+    const freeFall = !this.grounded && !this.flying && !this.vehicle && !this.swimming && !this.downed &&
+      this.actionLock <= 0 && !this.holdPose && this.diveBlend < 0.25 && this.vel.y < -12;
+    this.tuckCool = Math.max(0, (this.tuckCool ?? 0) - dt);
+    if (this.tuckT > 0) {
+      this.tuckT = freeFall ? this.tuckT - dt : 0;
+      if (this.tuckT <= 0) this.tuckCool = 1.6;
+    } else if (freeFall && this.tuckCool <= 0 && Math.random() < dt * 0.45 &&
+      // only with room to finish the roll well before the ground arrives
+      this.pos.y - this.world.city.groundHeight(this.pos.x, this.pos.z, this.pos.y + 1) > -this.vel.y * (TUCK_DUR + 1.2) + 8) {
+      this.tuckT = TUCK_DUR;
+      this.tuckDir = Math.random() < 0.8 ? 1 : -1;      // mostly forward, now and then a back flip
+      this.anim.play('tuckRoll', { fade: 0.14, restart: true });
+    }
+
+    if (this.tuckT > 0) {
+      // the somersault: ease in, turn right over, ease out
+      const u = 1 - this.tuckT / TUCK_DUR;
+      const flip = (u * u * (3 - 2 * u)) * Math.PI * 2 * this.tuckDir;
+      _e2.set(flip, this.heading, 0, 'YXZ');
+      this.holder.quaternion.setFromEuler(_e2);
+    } else if (this.diveBlend > 0.02) {
       // face the way you're actually travelling, then pitch over into it
       if (hspd > 6) {
         this.heading = approachAngle(this.heading, Math.atan2(this.vel.x, this.vel.z), 6, dt);
@@ -943,7 +1054,8 @@ export class Player {
     if (this.actionLock <= 0 && !this.holdPose) {
       const hs = Math.hypot(this.vel.x, this.vel.z);
       if (!this.grounded) {
-        if (this.diveBlend > 0.3) this.anim.play('dive', { fade: 0.22 });
+        if (this.tuckT > 0) { /* mid-somersault: the tuck clip runs its course */ }
+        else if (this.diveBlend > 0.3) this.anim.play('dive', { fade: 0.22 });
         else if (this.vel.y > 1.5) this.anim.play('jumpUp', { fade: 0.2 });
         else this.anim.play('fall', { fade: 0.22 });
       } else if (hs > Math.max(8, 6.4 * s.get('jogSpeed') * 1.15)) {
@@ -1038,10 +1150,15 @@ export class Player {
     if (d < 1e-4) return;
     _v1.divideScalar(d);
     const closing = this.vel.x * _v1.x + this.vel.z * _v1.z;
-    if (closing < 4) return;
+    // Walking or jogging into a car is a bump, not a crash: nothing below a
+    // run counts, and the damage and shove grow from there with the speed
+    // you actually hit it at — a cruise-speed fly-in dents and shoves, only
+    // a sprint-flight ram launches or wrecks it.
+    if (closing < 7) return;
     this._carHitT = 0.35;
-    const force = clamp(closing * 0.9, 8, 46) * (this.suited ? 1 : 0.4);
-    this.world.traffic.impact(v, _v1, force, closing * 2.2 * this.strength);
+    const over = closing - 6;
+    const force = clamp(over * 0.55, 3, 46) * (this.suited ? 1 : 0.4);
+    this.world.traffic.impact(v, _v1, force, over * 1.3 * this.strength);
     this.cam.addShake(clamp(force * 0.006, 0.05, 0.3));
     this.vel.multiplyScalar(this.flying ? 0.86 : 0.7);
   }
@@ -1101,7 +1218,7 @@ export class Player {
 
     // fall into water -> start swimming; fly out of it -> stop
     const inWater = this.world.city.isWater(this.pos.x, this.pos.z);
-    if (!this.flying && inWater && this.pos.y < CITY.WATER_Y + 0.9) this.enterWater();
+    if (!this.flying && inWater && this.pos.y < this.world.city.waterLevel(this.pos.x, this.pos.z) + 0.9) this.enterWater();
     else if (this.swimming && (!inWater || this.flying)) this.exitWater();
 
     if (this.flying) this._flight(dt, input);

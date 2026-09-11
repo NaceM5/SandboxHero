@@ -3,7 +3,6 @@ import { buildCharacter } from '../char/Rig.js';
 import { Animator } from '../char/Animator.js';
 import { Ragdoll } from '../char/Ragdoll.js';
 import { approachAngle } from '../core/Util.js';
-import { CITY } from '../world/RoadNetwork.js';
 
 const _e = new THREE.Euler(0, 0, 0, 'YXZ');
 const STEP_DOWN = 0.62;   // anything taller than a kerb is a fall, not a step
@@ -94,6 +93,7 @@ export class Actor {
     if (this.phys === 'walk' || this.phys === 'rising') {
       this.doll.bind(this.rig, this.group);
     }
+    this.world.audio?.voice(this, Math.min(1.3, .6 + force / 30), force > 20 ? .85 : 1);
     this.phys = 'ragdoll';
     this.airborne = true;
     this.grounded = false;
@@ -139,9 +139,10 @@ export class Actor {
 
   damage (amount, from) {
     if (this.dead) return false;
-    if (this.invulnerable) { this.anim.flinch = 1; this.onHarmless?.(from); return false; }
+    if (this.invulnerable) { this.anim.flinch = 1; this.world.audio?.voice(this, .6, 1.2); this.onHarmless?.(from); return false; }
     this.health -= amount;
     this.anim.flinch = 1;
+    this.world.audio?.voice(this, Math.min(1.2, .5 + amount / 60), amount > 40 ? .85 : 1);
     if (this.health <= 0) { this.health = 0; this.onDeath?.(from); return true; }
     return false;
   }
@@ -176,14 +177,16 @@ export class Actor {
     // Out of their depth: water with nothing standable under it. Thrown off
     // the warship there is no seabed within reach, so they tread water and
     // make for the nearest shore rather than standing on the bottom.
-    const deep = city.isWater(this.pos.x, this.pos.z) && support <= CITY.WATER_Y + 0.3;
+    const waterY = city.waterLevel(this.pos.x, this.pos.z);
+    const deep = city.isWater(this.pos.x, this.pos.z) && support <= waterY + 0.3;
     if (deep && this.phys === 'walk') {
       if (!this.inWater) { this.inWater = true; this.drownT = 0; this.onEnterWater?.(); }
       this.airborne = false;
       this.vy = 0;
       this.drownT += dt;
-      this.pos.y = CITY.WATER_Y - 0.45;          // chest deep, not standing on it
-      const n = this.world.roads.nearestWalkNode(this.pos.x, this.pos.z);
+      this.pos.y = waterY - 1.15;                // chest deep: only head and shoulders clear
+      // make for a shore at this water's level, never a footway on a deck overhead
+      const n = this.world.roads.nearestWalkNode(this.pos.x, this.pos.z, waterY, 14);
       if (n) {
         const dx = n.x - this.pos.x, dz = n.z - this.pos.z;
         const L = Math.hypot(dx, dz) || 1;
@@ -272,10 +275,21 @@ export class Actor {
       return true;
     }
 
+    // a hard stop — the ground, a wall, a car — knocks the wind out of them
+    const before = this.phys === 'held' ? 0 : this.doll.velocity(_d).length();
     this.doll.step(dt, city, this.phys === 'held' ? this._hold : null);
+    if (before > 9) {
+      const lost = before - this.doll.velocity(_d).length();
+      if (lost > 7) this.world.audio?.voice(this, Math.min(1.3, lost / 16), .8);
+    }
     this.doll.applyToRig(this.rig, this.group);
     this.doll.centre(_c);
-    this.pos.set(_c.x, city.groundHeight(_c.x, _c.z, _c.y + 0.5), _c.z);
+    // `pos` is the feet reference: on the ground under the body when it is
+    // lying there, but tracking the body itself while it is in the air. Every
+    // pick, blast and grab test reads `pos`, and pinning it to the ground put
+    // them a hundred metres under someone who had been thrown into the sky.
+    const floor = city.groundHeight(_c.x, _c.z, _c.y + 0.5);
+    this.pos.set(_c.x, Math.max(floor, _c.y - this.height * 0.45), _c.z);
 
     if (this.phys === 'held') return true;
 

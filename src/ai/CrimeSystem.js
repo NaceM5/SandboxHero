@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Enemy, rollTier, TIERS } from './Enemy.js';
-import { CITY, blockCenter } from '../world/RoadNetwork.js';
+import { WORLD } from '../world/Map.js';
 import { Noise, rand, randInt, clamp, pick } from '../core/Util.js';
 
 const _shot = new THREE.Vector3(), _shot2 = new THREE.Vector3();
@@ -18,9 +18,12 @@ const CRIME_TYPES = [
 ];
 
 /**
- * Crime is distributed over a static density field rather than spawned
- * around the player: hot blocks downtown, quieter ones on the fringe. The
- * sandbox sliders scale the field's amplitude and the enemy-tier roll.
+ * Crime is distributed over a static density field: hot cells in the dense
+ * downtown blocks, quieter ones out along the hillside lanes and the coast.
+ * On a seven-kilometre map the field is also weighted toward the player, so
+ * something is always happening within reach without the whole city being
+ * empty of trouble. The sandbox sliders scale the field's amplitude and the
+ * enemy-tier roll.
  */
 export class CrimeSystem {
   constructor (world) {
@@ -31,7 +34,7 @@ export class CrimeSystem {
     this.resolved = 0;
     this.nextId = 1;
 
-    this.density = new Float32Array(CITY.BLOCKS * CITY.BLOCKS);
+    this.density = new Float32Array(WORLD.BLOCKS);
     this._buildDensity();
 
     // shared marker assets
@@ -42,19 +45,24 @@ export class CrimeSystem {
   }
 
   _buildDensity () {
-    const B = CITY.BLOCKS;
+    const city = this.world.city;
     let max = 0;
-    for (let j = 0; j < B; j++) {
-      for (let i = 0; i < B; i++) {
-        const c = blockCenter(i, j);
-        const zone = this.world.city.zoneAt(c.x, c.z);
+    for (let j = 0; j < WORLD.BJ; j++) {
+      for (let i = 0; i < WORLD.BI; i++) {
+        const k = j * WORLD.BI + i;
+        // no footway in the cell means nowhere to stand a crime: open water,
+        // hilltops, the middle of the port aprons
+        if (!city.walkNodesInCell(i, j)) { this.density[k] = 0; continue; }
+        const c = WORLD.cellCenter(i, j);
+        const zone = city.zoneAt(c.x, c.z);
         const n = this.noise.fbm(c.x * 0.0035 + 3.1, c.z * 0.0035 - 1.7, 4);
         const n2 = this.noise.fbm(c.x * 0.011, c.z * 0.011, 3);
-        // hot spots cluster; downtown is busier but the rough edges of the
-        // map get their own pockets so the whole city has something going on
-        let v = Math.pow(n, 2.1) * 1.35 + n2 * 0.35 + zone * 0.30;
-        v = Math.max(0, v - 0.18);
-        this.density[j * B + i] = v;
+        // hot spots cluster; downtown is far busier, but the hillside towns
+        // and the waterfront get their own pockets so the whole map has
+        // something going on
+        let v = Math.pow(n, 2.1) * 0.9 + n2 * 0.30 + zone * 0.85;
+        v = Math.max(0, v - 0.16);
+        this.density[k] = v;
         if (v > max) max = v;
       }
     }
@@ -62,27 +70,32 @@ export class CrimeSystem {
   }
 
   densityAt (x, z) {
-    const B = CITY.BLOCKS;
-    const bi = clamp(Math.round(x / CITY.CELL + (B - 1) / 2), 0, B - 1);
-    const bj = clamp(Math.round(z / CITY.CELL + (B - 1) / 2), 0, B - 1);
-    return this.density[bj * B + bi];
+    const k = WORLD.cellIndex(x, z);
+    return k < 0 ? 0 : this.density[k];
   }
 
   _pickCell () {
-    const B = CITY.BLOCKS;
     const s = this.world.settings;
     const amp = s.get('crimeDensity');
+    const p = this.world.player.pos;
     let total = 0;
-    const w = [];
+    const w = new Float32Array(this.density.length);
     for (let k = 0; k < this.density.length; k++) {
-      const d = Math.pow(this.density[k], 1 + (1 - amp) * 2.6);
-      w.push(d); total += d;
+      const d = this.density[k];
+      if (d <= 0) continue;
+      const c = WORLD.cellCenter(k % WORLD.BI, Math.floor(k / WORLD.BI));
+      const dist = Math.hypot(c.x - p.x, c.z - p.z);
+      // most crime lands within a few streets of the hero; a little of it
+      // keeps the rest of the map alive
+      const prox = 0.08 + 0.92 * Math.exp(-(dist * dist) / (760 * 760));
+      const v = Math.pow(d, 1 + (1 - amp) * 2.6) * prox;
+      w[k] = v; total += v;
     }
     if (total <= 0) return null;
     let r = Math.random() * total;
     for (let k = 0; k < w.length; k++) {
       r -= w[k];
-      if (r <= 0) return { bi: k % B, bj: Math.floor(k / B), d: this.density[k] };
+      if (r <= 0) return { bi: k % WORLD.BI, bj: Math.floor(k / WORLD.BI), d: this.density[k] };
     }
     return null;
   }
@@ -110,76 +123,24 @@ export class CrimeSystem {
 
   /* ---------------- spawning ---------------- */
 
-  spawnNear (x, z) {
-    const B = CITY.BLOCKS;
-    const bi = clamp(Math.round(x / CITY.CELL + (B - 1) / 2), 0, B - 1);
-    const bj = clamp(Math.round(z / CITY.CELL + (B - 1) / 2), 0, B - 1);
-    return this.spawn({ bi, bj, d: this.density[bj * B + bi] });
+  spawnNear (x, z, typeId = null) {
+    const k = WORLD.cellIndex(x, z);
+    if (k < 0) return null;
+    const bi = k % WORLD.BI, bj = Math.floor(k / WORLD.BI);
+    if (!this.world.city.walkNodesInCell(bi, bj)) return null;
+    return this.spawn({ bi, bj, d: Math.max(0.35, this.density[k]) }, typeId);
   }
 
   /**
-   * Places that always have trouble, wherever the density field says.
-   *
-   * The warship is the busiest — it is a standing arena out in the water that
-   * has to be reached by air or by sea. None of them run a pursuit: there is
-   * no road out there to drive on.
+   * Places that always have trouble, wherever the density field says: the
+   * carrier's flight deck out in the bay, the Aeris penthouse and its street
+   * lobby, and the mansion on the headland. The map describes each one as a
+   * set of posts — stations on the deck, rooms in the interiors — and every
+   * enemy starts at a different post so a crew spreads through the place.
+   * None of them run a pursuit: there is no road out there to drive on.
    */
   _sites () {
-    if (this._siteList) return this._siteList;
-    const c = this.world.city;
-    const out = [];
-    if (c.battleship) {
-      const B = c.battleship, L = B.len / 2;
-      // Stations the length of the ship: forward turret, bow, waist, boat deck,
-      // quarterdeck, stern. Spawning everyone in one place put the whole crew
-      // amidships on a two-hundred-metre hull.
-      const posts = [-0.86, -0.62, -0.3, 0.05, 0.42, 0.78].map(t =>
-        new THREE.Vector3(B.x + (Math.random() < 0.5 ? -1 : 1) * rand(0, 7), B.deck, B.z + t * L));
-      out.push({ name: 'warship', weight: 3.2, posts,
-        pos: new THREE.Vector3(B.x, B.deck, B.z), spread: 8, along: L * 0.86 });
-    }
-    if (c.carrier) {
-      const K = c.carrier, KL = K.len / 2;
-      // stations up the flight deck, plus two down in the hangar
-      const posts = [
-        new THREE.Vector3(K.x - K.deckW * 0.28, K.deck, K.z - KL * 0.72),
-        new THREE.Vector3(K.x + K.deckW * 0.20, K.deck, K.z - KL * 0.34),
-        new THREE.Vector3(K.x - K.deckW * 0.24, K.deck, K.z + KL * 0.04),
-        new THREE.Vector3(K.x + K.deckW * 0.26, K.deck, K.z + KL * 0.44),
-        new THREE.Vector3(K.x - K.deckW * 0.18, K.deck, K.z + KL * 0.76),
-        new THREE.Vector3(K.x, K.hangar, K.z - KL * 0.3),
-        new THREE.Vector3(K.x, K.hangar, K.z + KL * 0.4)
-      ];
-      out.push({ name: 'carrier', weight: 2.6, posts,
-        pos: new THREE.Vector3(K.x, K.deck, K.z), spread: 10, along: KL * 0.8 });
-    }
-    if (c.penthouse) {
-      const P = c.penthouse;
-      for (const f of P.floors) {
-        // inside, and out on the porch at each corner
-        const posts = [
-          new THREE.Vector3(P.x - 8, f, P.z - 6),
-          new THREE.Vector3(P.x + 8, f, P.z + 6),
-          new THREE.Vector3(P.x + P.hw + 3, f, P.z - P.hd - 3),
-          new THREE.Vector3(P.x - P.hw - 3, f, P.z + P.hd + 3)
-        ];
-        out.push({ name: 'penthouse', weight: 0.75, posts,
-          pos: new THREE.Vector3(P.x, f, P.z), spread: 9 });
-      }
-    }
-    if (c.mansionDoor) {
-      const D = c.mansionDoor;
-      const posts = [
-        new THREE.Vector3(D.x - 10, D.y, D.z - 22),
-        new THREE.Vector3(D.x + 10, D.y, D.z - 22),
-        new THREE.Vector3(D.x, D.y, D.z - 6),
-        new THREE.Vector3(D.x - 14, D.y, D.z - 34)
-      ];
-      out.push({ name: 'estate', weight: 0.6, posts,
-        pos: new THREE.Vector3(D.x, D.y, D.z - 16), spread: 12 });
-    }
-    this._siteList = out;
-    return out;
+    return this.world.city.crimeSites || [];
   }
 
   _pickSite () {
@@ -192,34 +153,38 @@ export class CrimeSystem {
     return list[0];
   }
 
-  spawn (cell) {
+  spawn (cell, typeId = null) {
     const s = this.world.settings;
     let px, pz, py = null, site = null, crimePosts = null, postBase = -1;
 
-    // roughly a third of the time, use one of the fixed sites instead
-    if (!cell && this._sites().length && Math.random() < 0.34) {
+    // now and then, use one of the fixed landmark sites instead
+    if (!cell && this._sites().length && Math.random() < 0.22) {
       site = this._pickSite();
-      const sp = site.spread, al = site.along ?? sp;
-      px = site.pos.x + rand(-sp, sp);
-      pz = site.pos.z + rand(-al, al);
-      py = site.pos.y;
+      const post = pick(site.posts);
+      px = post.x + rand(-2, 2);
+      pz = post.z + rand(-2, 2);
+      py = post.y;
       crimePosts = site.posts || null;
     } else {
       cell = cell || this._pickCell();
       if (!cell) return null;
-      // place it on the sidewalk ring of that block so it's reachable on foot
-      const ring = this.world.roads.ringAt(cell.bi, cell.bj);
-      if (!ring) return null;                       // that block is river
-      const spot = pick(ring);
+      // place it on a footway in that cell so it's reachable on foot
+      const spots = this.world.city.walkNodesInCell(cell.bi, cell.bj);
+      if (!spots) return null;                      // open water or hilltop
+      let spot = pick(spots);
+      for (let t = 0; t < 8 && (spot.edge?.rare || this.world.city.covered(spot.x, spot.z, spot.y)); t++) spot = pick(spots);
+      if (spot.edge?.rare) return null;                // the estate drive: nobody's business
       px = spot.x + rand(-3, 3); pz = spot.z + rand(-3, 3);
+      py = spot.y;                                     // on the footway's level, not a deck overhead
     }
     cell = cell || { d: 0.5 };
 
-    // A fixed site takes neither a pursuit (no road out there) nor a crime
-    // with a civilian victim — the estate and the warship are places the crowd
-    // has no business being, and spawning a victim would put one there.
-    const allowed = site ? CRIME_TYPES.filter(t => !t.roadOnly && !t.victim) : CRIME_TYPES;
-    const type = pick(allowed);
+    // A fixed site takes neither a pursuit nor a carjacking (no road or car out
+    // there) nor a crime with a civilian victim — the carrier, the penthouse and
+    // the estate are places the crowd has no business being, and spawning a
+    // victim would put one there.
+    const allowed = site ? CRIME_TYPES.filter(t => !t.roadOnly && !t.victim && !t.hijack) : CRIME_TYPES;
+    const type = (typeId && CRIME_TYPES.find(t => t.id === typeId)) || pick(allowed);
     const diff = s.get('crimeDifficulty');
     const mult = s.get('enemiesPerCrime');
     const count = clamp(Math.round(randInt(type.min, type.max) * mult * (0.75 + cell.d * 0.6)), 1, 8);
@@ -279,7 +244,7 @@ export class CrimeSystem {
     crime.alive = crime.enemies.length;
 
     if (type.victim) {
-      const v = this.world.spawnPedestrian(px + rand(-2.5, 2.5), pz + rand(-2.5, 2.5));
+      const v = this.world.spawnPedestrian(px + rand(-2.5, 2.5), pz + rand(-2.5, 2.5), py);
       if (v) { v.panic(crime.pos, 1); v.state = 'cower'; v.timer = 999; crime.victim = v; }
     }
 
@@ -289,6 +254,50 @@ export class CrimeSystem {
     this.crimes.push(crime);
     this.world.onCrimeSpawned?.(crime);
     return crime;
+  }
+
+  /**
+   * A crime raised by something other than the density field — a scenario
+   * dropping a squad, say. It gets the marker, the objective readout, the
+   * minimap dot and the enemy tracking like any other; the caller adds the
+   * enemies with `attach`.
+   */
+  addExternal ({ label, x, z, tier = 0, persistent = false }) {
+    const crime = {
+      id: this.nextId++, type: 'external', label,
+      pos: new THREE.Vector3(x, 0, z),
+      enemies: [], victim: null, alive: 0, state: 'active', fade: 0, timer: 0,
+      hijack: false, hijackDone: true, pursuit: false, site: null, vehicle: null, driver: null,
+      shootT: 0, topTier: tier, external: true, persistent,
+      onEnemyDown: (e) => {
+        crime.alive--;
+        if (crime.alive <= 0 && crime.state === 'active') {
+          crime.state = 'resolved';
+          crime.timer = 0;
+          this.resolved++;
+          this.world.onCrimeResolved?.(crime);
+        }
+      }
+    };
+    this._makeMarker(crime);
+    this.crimes.push(crime);
+    return crime;
+  }
+
+  /** Add an enemy to an external crime after the fact. */
+  attach (crime, e) {
+    e.crime = crime;
+    crime.enemies.push(e);
+    crime.alive++;
+    crime.topTier = Math.max(crime.topTier, e.tier);
+    if (crime.marker) crime.marker.color.set(TIERS[crime.topTier].color);
+  }
+
+  removeCrime (crime) {
+    const i = this.crimes.indexOf(crime);
+    if (i < 0) return;
+    this._destroy(crime);
+    this.crimes.splice(i, 1);
   }
 
   _makeMarker (crime) {
@@ -328,7 +337,7 @@ export class CrimeSystem {
     if (!v) { crime.pursuit = false; return; }
 
     traffic.hijack(v, 'enemy', (veh) => {
-      const p = this.world.spawnPedestrian(veh.pos.x + rand(-2, 2), veh.pos.z + rand(-2, 2));
+      const p = this.world.spawnPedestrian(veh.pos.x + rand(-2, 2), veh.pos.z + rand(-2, 2), veh.pos.y);
       p?.panic(crime.pos, 1);
     });
     v.disturbed = false;                 // the hijack itself doesn't count
@@ -410,6 +419,35 @@ export class CrimeSystem {
     }
   }
 
+  /**
+   * The crime is wherever its crew is. The marker sticks to one living enemy
+   * — the one nearest the hero, so it points at whoever is coming for you —
+   * and eases after them, staying on whatever floor they are standing on.
+   */
+  _trackEnemies (crime, dt) {
+    let anchor = crime.anchor;
+    if (!anchor || anchor.dead) {
+      anchor = null;
+      let bd = Infinity;
+      const pp = this.world.player.pos;
+      for (const e of crime.enemies) {
+        if (e.dead) continue;
+        const d = e.pos.distanceToSquared(pp);
+        if (d < bd) { bd = d; anchor = e; }
+      }
+      crime.anchor = anchor;
+    }
+    if (!anchor) return;
+    const k = Math.min(1, dt * 4);
+    crime.pos.x += (anchor.pos.x - crime.pos.x) * k;
+    crime.pos.z += (anchor.pos.z - crime.pos.z) * k;
+    crime.pos.y = this.world.city.groundHeight(crime.pos.x, crime.pos.z, anchor.pos.y + 1.4);
+    if (crime.marker) {
+      crime.marker.beam.position.set(crime.pos.x, crime.pos.y + 0.1, crime.pos.z);
+      crime.marker.ring.position.set(crime.pos.x, crime.pos.y + 0.12, crime.pos.z);
+    }
+  }
+
   _updateCrime (crime, dt, ctx) {
     crime.timer += dt;
     const m = crime.marker;
@@ -421,6 +459,7 @@ export class CrimeSystem {
     }
 
     if (crime.pursuit && crime.vehicle) this._updatePursuit(crime, dt);
+    else if (crime.state === 'active') this._trackEnemies(crime, dt);
 
     // a carjacking crew actually takes a car
     if (crime.hijack && !crime.hijackDone && crime.timer > rand(2, 4)) {
@@ -430,7 +469,7 @@ export class CrimeSystem {
       if (v && thief) {
         crime.hijackDone = true;
         traffic.hijack(v, 'enemy', (veh) => {
-          const p = this.world.spawnPedestrian(veh.pos.x + rand(-2, 2), veh.pos.z + rand(-2, 2));
+          const p = this.world.spawnPedestrian(veh.pos.x + rand(-2, 2), veh.pos.z + rand(-2, 2), veh.pos.y);
           p?.panic(crime.pos, 1);
         });
         this.world.notify(`Carjacking — ${TIERS[thief.tier].name} took a vehicle`);
@@ -446,9 +485,10 @@ export class CrimeSystem {
       return;
     }
 
-    // clean up crimes the player has ignored for a long time and is far from
+    // clean up crimes the player has ignored for a long time and is far from —
+    // unless a scenario owns it (a crew holding a ship 900 m up is always far)
     const dp = this.world.player.pos.distanceTo(crime.pos);
-    if (dp > 620 && crime.timer > 150) {
+    if (!crime.persistent && dp > 900 && crime.timer > 150) {
       crime.state = 'expired';
       crime.remove = true;
     }

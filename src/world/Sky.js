@@ -128,7 +128,7 @@ export class Sky {
     this.sun.shadow.mapSize.set(2048, 2048);
     const cam = this.sun.shadow.camera;
     cam.near = 1; cam.far = 620;
-    cam.left = -150; cam.right = 150; cam.top = 150; cam.bottom = -150;
+    cam.left = -170; cam.right = 170; cam.top = 170; cam.bottom = -170;
     this.sun.shadow.bias = -0.0009;
     this.sun.shadow.normalBias = 0.32;
     scene.add(this.sun);
@@ -147,7 +147,7 @@ export class Sky {
     this.ambientLevel = 0.35;
     this.bright = false;
 
-    scene.fog = new THREE.FogExp2(0x1a2230, 0.0016);
+    scene.fog = new THREE.FogExp2(0x1a2230, 0.0008);
     this.sunDir = new THREE.Vector3(0, 1, 0);
     this.night = 0;
     this.setTime(0.66);
@@ -211,7 +211,7 @@ export class Sky {
     this.sun.intensity = b ? Math.max(this._sunBase, 0.8) : this._sunBase;
     this.scene.fog.color.copy(this._fogBase);
     const fogK = this.bright ? 0.45 : 1;
-    this.scene.fog.density = (0.00062 + n * 0.00055) * fogK;
+    this.scene.fog.density = (0.00036 + n * 0.00034) * fogK;
   }
 
   /** Keep the sky centred on the camera and the shadow box around the player. */

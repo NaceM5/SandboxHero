@@ -1,3 +1,4 @@
+import {updateCampus} from './world/Campus.js';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
@@ -7,14 +8,18 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { settings } from './core/Settings.js';
 import { Input } from './core/Input.js';
 import { clamp, rand, randInt, pick } from './core/Util.js';
-import { RoadNetwork, CITY } from './world/RoadNetwork.js';
-import { City } from './world/City.js';
+import { GameMap } from './world/Map.js';
+import { ElevatorPrompt, useElevator } from './world/Elevators.js';
+import { Roads } from './world/Roads.js';
 import { PropSystem } from './world/Props.js';
 import { Sky } from './world/Sky.js';
+import { GameAudio } from './fx/Audio.js';
 import { Effects } from './fx/Effects.js';
 import { Traffic } from './vehicles/Traffic.js';
 import { Pedestrian } from './ai/Pedestrian.js';
+import { randomSuit } from './char/Rig.js';
 import { CrimeSystem } from './ai/CrimeSystem.js';
+import { Scenarios } from './scenarios/Scenarios.js';
 import { Projectiles } from './powers/Powers.js';
 import { CameraRig } from './player/CameraRig.js';
 import { Player } from './player/Player.js';
@@ -70,20 +75,31 @@ class World {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.2, 4000);
+    this.camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.2, 8000);
     this.camera.position.set(0, 6, -12);
 
-    await step(12, 'laying out the street grid');
-    this.roads = new RoadNetwork();
+    await step(8, 'surveying the coast');
+    this.city = new GameMap(this.scene);
 
-    await step(30, 'raising the skyline');
-    this.city = new City(this.scene, this.roads);
+    await step(16, 'raising the skyline');
+    this.city.buildVisuals();
 
-    await step(52, 'hanging the sun');
+    await step(38, 'laying the foundations');
+    this.city.buildCollision();
+
+    await step(46, 'laying out the streets');
+    this.roads = new Roads(this.city.data);
+
+    await step(52, 'planting the trees');
+    this.city.buildFurniture(this.roads);
+    this.city.buildWater();
+
+    await step(58, 'hanging the sun');
     this.sky = new Sky(this.scene, this.renderer);
 
     await step(62, 'wiring effects');
-    this.effects = new Effects(this.scene);
+    this.audio = new GameAudio(this);
+    this.effects = new Effects(this.scene, this.audio);
     this.projectiles = new Projectiles(this);
     this.props = new PropSystem(this);
 
@@ -91,6 +107,7 @@ class World {
     this.traffic = new Traffic(this.scene, this.roads, this.city, this.effects);
     this.traffic.world = this;
     this.traffic.onExplosion = (v, at) => {
+      this.audio.play('blast', at);
       // skipVehicle is essential: without it the wreck is caught in its own
       // blast, gets re-launched, lands, explodes again — bouncing forever
       this.applyImpact(at, 10, {
@@ -108,8 +125,10 @@ class World {
     this.player = new Player(this, this.cameraRig);
     this.player.cam = this.cameraRig;
     this.placePlayer();
+    this.elevatorPrompt = new ElevatorPrompt(this);
 
     this.crime = new CrimeSystem(this);
+    this.scenarios = new Scenarios(this);
 
     await step(90, 'compositing');
     this.composer = new EffectComposer(this.renderer);
@@ -151,36 +170,34 @@ class World {
   /** Open on a rooftop looking back over downtown — it frames the city and
    *  makes the first thing you do a jump or a takeoff. */
   placePlayer () {
+    const C = this.city.downtown;
     let best = null, bestScore = -Infinity;
     for (const r of this.city.rooftops) {
       if (r.y < 34 || r.y > 95) continue;
       if (Math.min(r.w, r.d) < 22) continue;              // needs room to stand
-      const d = Math.hypot(r.x, r.z);
+      const d = Math.hypot(r.x - C.x, r.z - C.z);
       if (d < 260 || d > 620) continue;
       const score = r.y + Math.min(r.w, r.d) * 0.5 - Math.abs(d - 420) * 0.25;
       if (score > bestScore) { bestScore = score; best = r; }
     }
     const p = this.player;
     if (!best) {
-      // no suitable roof — stand on the nearest pavement instead
-      const ring = this.roads.blockRings.find(r => r);
-      const n = ring ? ring[0] : { x: 0, z: 0 };
+      // no suitable roof — stand on the pavement nearest the core instead
+      const n = this.roads.nearestWalkNode(C.x, C.z);
       p.pos.set(n.x, this.city.groundHeight(n.x, n.z), n.z);
       this.cameraRig.yaw = Math.PI * 0.25;
       p.heading = this.cameraRig.yaw;
       p.grounded = true;
       return;
     }
-    if (best) {
-      // stand on the outward edge facing the centre, so the camera sits out
-      // over the drop rather than behind a rooftop mast
-      const len = Math.hypot(best.x, best.z) || 1;
-      const ox = best.x / len, oz = best.z / len;
-      const edge = Math.min(best.w, best.d) / 2 - 2.2;
-      p.pos.set(best.x + ox * edge, best.y, best.z + oz * edge);
-      this.cameraRig.yaw = Math.atan2(-ox, -oz);           // face the city centre
-      this.cameraRig.pitch = -0.10;
-    }
+    // stand on the outward edge facing the core, so the camera sits out
+    // over the drop rather than behind a rooftop plant room
+    const len = Math.hypot(best.x - C.x, best.z - C.z) || 1;
+    const ox = (best.x - C.x) / len, oz = (best.z - C.z) / len;
+    const edge = Math.min(best.w, best.d) / 2 - 2.2;
+    p.pos.set(best.x + ox * edge, best.y, best.z + oz * edge);
+    this.cameraRig.yaw = Math.atan2(-ox, -oz);           // face the city centre
+    this.cameraRig.pitch = -0.10;
     p.heading = this.cameraRig.yaw;
     p.grounded = true;
   }
@@ -216,6 +233,7 @@ class World {
     this.camera.updateProjectionMatrix();
     this.setPedCount(s.get('pedestrians'));
     this.traffic.setCount(s.get('vehicles'));
+    this._parkCampusCars();
     this.player.health = Math.min(this.player.health, s.get('maxHealth'));
     this.player.energy = Math.min(this.player.energy, s.get('maxEnergy'));
   }
@@ -223,6 +241,7 @@ class World {
   onSettingChanged (path) {
     const s = settings;
     if (path === '*') { this.player.buildRigs(); this.applyAllSettings(); return; }
+    if (path === 'trafficRadius' || path === 'crowdRadius') return;   // read live by the streamers
     if (path === 'timeOfDay' || path === 'ambient' || path === 'brightMode' || path === 'exposure') {
       this.applyLighting();
       if (this.bloom) this.bloom.strength = s.get('bloom') * (s.get('brightMode') ? 0.55 : 1);
@@ -244,6 +263,7 @@ class World {
   onSettingsBulkChange () { this.player.buildRigs(); this.applyAllSettings(); }
 
   rebuildPopulation () {
+    this.scenarios.abort();
     this.crime.clear();
     this.props.clear();
     for (const p of this.peds) p.dispose();
@@ -257,9 +277,55 @@ class World {
   /* ================= population ================= */
 
   setPedCount (n) {
+    // the count is the crowd; a place's own staff are on top of it
     n = Math.max(0, Math.round(n));
-    while (this.peds.length < n) this.peds.push(new Pedestrian(this, this._crowdNode()));
-    while (this.peds.length > n) this.peds.pop().dispose();
+    const crowd = () => this.peds.filter(a => !a.station).length;
+    while (crowd() < n) this.peds.push(new Pedestrian(this, this._crowdNode()));
+    while (crowd() > n) {
+      const i = this.peds.findLastIndex(a => !a.station);
+      this.peds.splice(i, 1)[0].dispose();
+    }
+    if (!this.peds.some(a => a.station)) this._populateCampus();
+  }
+
+  /** Real cars in the campus car park, nose to the wheel stops, most bays taken. */
+  _parkCampusCars () {
+    const c = this.city.data.campus;
+    if (!c || !c.bays || this.traffic.vehicles.some(v => v.fixed)) return;
+    for (const b of c.bays) if (Math.random() < 0.62) this.traffic.parkAt(b.x, b.z, b.heading, b.y);
+  }
+
+  /**
+   * The Meridian campus is gated: no footway leads in, so the crowd never
+   * does. Its people are its own — office staff in dark suits stationed on
+   * posts around the grounds and on each floor of the research building,
+   * drifting between desks, sofas and terraces and never leaving.
+   */
+  _populateCampus () {
+    const c = this.city.data.campus;
+    if (!c) return;
+    const X = c.x, Z = c.z, F = c.floors.main, U = c.floors.upper, B = c.floors.basement;
+    const L = (u, v) => [X + u, Z + v];
+    // Posts sit in aisles and open floor, never on a desk: a desk at (x, z)
+    // takes x ± 1.5 and z − 0.7 … z + 2.3 including the chair, so the rows at
+    // z = −20, −12, −4, 4, 12, 20 leave aisles centred on −15, −7, 1, 9, 17.
+    const groups = [
+      // the grounds: the paths, the garden walks, the terraces, the car park, the gate
+      { y: F, count: 26, posts: [[-2370, -1860], [-2370, -1780], [-2370, -1700], [-2370, -1600], [-2370, -1520], [-1906, -1860], [-1906, -1780], [-1906, -1700], [-1906, -1600], [-1906, -1520], [-2300, -1872], [-2200, -1872], [-2000, -1872], [-2300, -1508], [-2200, -1508], [-2000, -1508], [-2128, -1560], [-2128, -1640], [-2128, -1720], [-2128, -1800], [-2250, -1704], [-2060, -1704], [-2350, -1704], [-2220, -1548], [-2335, -1735], [-2070, -1855], [-2010, -1578], [-2060, -1628], [-1960, -1628], [-1975, -1470], [-1935, -1740], [-2300, -1596], [-2180, -1500], [-2100, -1500], [-2100, -1750]] },
+      // the research building: lobby, upper offices, and the secure basement (offices and mission control keep to their own side of the doors)
+      { y: F, count: 8, posts: [L(-15, -15), L(-9, -7), L(-21, 1), L(-15, 9), L(-3, -10), L(-3, 2), L(8, 6), L(8, 14), L(15, -6), L(15, -19), L(0, 20), L(-10, 6), L(-21, -7)] },
+      { y: U, count: 14, posts: [L(0, -16), L(0, -8), L(0, 0), L(0, 8), L(0, 16), L(-12, -13), L(-15, 1), L(15, 1), L(-15, 9), L(-9, 17), L(9, 17), L(18, 8), L(-21, 17), L(21, 9), L(-19, -22), L(-27, -18), L(18.5, -13), L(10, -24), L(27, -14)] },
+      { y: B, count: 7, posts: [L(-14, 4.8), L(0, 4.8), L(14, 4.8), L(-14, 10.8), L(5, 10.8), L(0, 15), L(-24.5, 12.5), L(-24.5, 1.5), L(-19.5, 9)] },
+      { y: B, count: 6, posts: [L(-15, -13.2), L(-5, -13.2), L(5, -13.2), L(15, -13.2), L(-10, -24), L(10, -24), L(0, -5.5), L(-15, -5.5), L(15, -5.5)] }
+    ];
+    for (const g of groups) {
+      for (let i = 0; i < g.count; i++) {
+        const p = new Pedestrian(this, this.roads.nearestWalkNode(X, Z, F, 400) || this.roads.randomWalkNode(), {
+          appearance: randomSuit(), station: { posts: g.posts, y: g.y }
+        });
+        this.peds.push(p);
+      }
+    }
   }
 
   /**
@@ -268,29 +334,23 @@ class World {
    * low-rise fringe stays quiet.
    */
   _crowdNode (nearPlayer = false) {
-    const rings = this.roads.blockRings;
-    const B = CITY.BLOCKS;
     const p = this.player;
     const radius = settings.get('crowdRadius');
     let best = null, bestW = -1;
     // weighted reservoir over a handful of candidates — far cheaper than
-    // building a full CDF every time a pedestrian recycles
+    // building a full CDF every time a pedestrian recycles. The whole crowd
+    // lives around the player: a seven-kilometre map spread evenly would be
+    // one person per street.
     for (let tries = 0; tries < 14; tries++) {
-      let bi, bj;
-      if (nearPlayer && p) {
-        const a = Math.random() * Math.PI * 2;
+      let node;
+      if (p) {
         // weight toward the near half so the immediate street feels busy
-        const r = 34 + Math.pow(Math.random(), 2.2) * (radius - 34);
-        bi = Math.round((p.pos.x + Math.cos(a) * r) / CITY.CELL + (B - 1) / 2);
-        bj = Math.round((p.pos.z + Math.sin(a) * r) / CITY.CELL + (B - 1) / 2);
-        if (bi < 0 || bj < 0 || bi >= B || bj >= B) continue;
-      } else {
-        bi = randInt(0, B - 1); bj = randInt(0, B - 1);
-      }
-      const ring = rings[bj * B + bi];
-      if (!ring) continue;   // that block is sea
-      const node = ring[randInt(0, ring.length - 1)];
+        const r = 34 + Math.pow(Math.random(), nearPlayer ? 2.2 : 1.2) * (radius - 34);
+        node = this.roads.randomWalkNodeNear(p.pos.x, p.pos.z, Math.max(20, r - 40), r + 40, 4);
+      } else node = this.roads.randomWalkNode();
+      if (!node) continue;
       if (this.city.isWater(node.x, node.z)) continue;
+      if (this.city.covered(node.x, node.z, node.y)) continue;   // never under the bridge
       if (nearPlayer && p) {
         const d = Math.hypot(node.x - p.pos.x, node.z - p.pos.z);
         if (d < 32 || d > radius) continue;
@@ -301,13 +361,12 @@ class World {
           if (dot > 0.35) continue;
         }
       }
-      // squared so a downtown block clearly outbids a low-rise one even with
-      // the whole crowd packed into a small radius around the player
-      const d = this.city.blockDensity[bj * B + bi];
-      const w = d * d * (0.3 + Math.random() * 0.7);
+      // squared so a downtown footway clearly outbids a hillside lane even
+      // with the whole crowd packed into a small radius around the player
+      const w = node.busy * node.busy * (0.3 + Math.random() * 0.7);
       if (w > bestW) { bestW = w; best = node; }
     }
-    return best || this.roads.randomWalkNode();
+    return best || this.roads.randomWalkNodeNear(p ? p.pos.x : 0, p ? p.pos.z : 0, 30, radius * 1.5, 30) || this.roads.randomWalkNode();
   }
 
   /**
@@ -328,10 +387,12 @@ class World {
     for (const a of this.peds) {
       if (budget <= 0) break;
       if (a.phys !== 'walk') continue;    // never teleport a body mid-tumble
+      if (a.captive || a.aboard || a.hostage || a.scripted || a.station) continue;   // a scenario, or a place, has them
+      if (a.pin > 0) { a.pin -= 0.25; continue; }                       // a scenario needs them where they are
       if (a.pos.distanceTo(p.pos) < keep) continue;
       const node = this._crowdNode(true);
       if (!node) continue;
-      a.pos.set(node.x, this.city.groundHeight(node.x, node.z), node.z);
+      a.pos.set(node.x, this.city.groundHeight(node.x, node.z, node.y + 3), node.z);
       a.node = node;
       a.next = node.links[randInt(0, node.links.length - 1)];
       a.prev = null;
@@ -343,10 +404,44 @@ class World {
     }
   }
 
-  spawnPedestrian (x, z) {
+  /**
+   * A civilian for a scenario that needs one somewhere specific — a street
+   * the airlifter has landed on, say, far from wherever the crowd is. A new
+   * one if the crowd has room, otherwise the one furthest from the hero is
+   * brought over; either way they are pinned so the crowd streaming doesn't
+   * recycle them straight back to the hero's neighbourhood.
+   */
+  placePedestrian (x, z, y, pin = 60) {
+    let a = this.spawnPedestrian(x, z, y);
+    if (!a) {
+      const pp = this.player.pos;
+      let bd = -1;
+      for (const c of this.peds) {
+        if (c.phys !== 'walk' || c.captive || c.aboard || c.hostage || c.scripted || c.station || c.pin > 0) continue;
+        const d = c.pos.distanceToSquared(pp);
+        if (d > bd) { bd = d; a = c; }
+      }
+      if (!a) return null;
+      const node = this.roads.nearestWalkNode(x, z, y, 8);
+      a.pos.set(x, this.city.groundHeight(x, z, y + 3), z);
+      a.node = node;
+      a.next = node.links[randInt(0, node.links.length - 1)];
+      a.prev = null;
+      a.state = 'walk';
+      a.timer = rand(2, 10);
+      a.fear = 0;
+      a.heading = rand(-Math.PI, Math.PI);
+    }
+    a.pin = pin;
+    return a;
+  }
+
+  /** Drop a civilian at (x,z), on the level `y` if given, else at street level. */
+  spawnPedestrian (x, z, y = null) {
     if (this.peds.length > 320) return null;
-    const p = new Pedestrian(this, this.roads.nearestWalkNode(x, z));
-    p.pos.set(x, this.city.groundHeight(x, z), z);
+    y = y === null ? this.city.streetHeight(x, z) : this.city.groundHeight(x, z, y + 3);
+    const p = new Pedestrian(this, this.roads.nearestWalkNode(x, z, y, 8));
+    p.pos.set(x, y, z);
     this.peds.push(p);
     return p;
   }
@@ -433,6 +528,9 @@ class World {
       }
     }
 
+    // aircraft: scenario fleets and the carrier's standing guard alike
+    if (this.scenarios) hits += this.scenarios.applyImpact(center, radius, o);
+
     const pf = o.propForce ?? knock;
     if (pf > 4) {
       const pr = o.propRadius ?? radius;
@@ -456,16 +554,17 @@ class World {
   /* ================= events ================= */
 
   notify (t) { this.hud?.notify(t); }
-  flashTransform () { this.hud?.flashTransform(); }
+  flashTransform () { this.hud?.flashTransform(); this.audio.play('transform'); }
   onCrimeResolved () {
     this.player.stats.crimes++;
     this.notify('CRIME STOPPED');
+    this.audio.play('success');
   }
   onCrimeSpawned (c) {
     const d = this.player.pos.distanceTo(c.pos);
     if (d < 260) this.notify(`${c.label} nearby`);
   }
-  onPlayerHurt () {}
+  onPlayerHurt () { this.audio.play('hurt'); }
   onTakedown () {}
 
   closeMenu () {
@@ -490,6 +589,16 @@ class World {
 
     if (i.locked) this.cameraRig.look(i.mouse.dx, i.mouse.dy);
 
+    /* ---- M: battle scenarios — hold for the selector, a number launches ---- */
+    const scen = i.down('KeyM');
+    this.scenarios.setSelectorVisible(scen);
+    if (scen) {
+      for (let k = 0; k < this.scenarios.list.length; k++) {
+        if (i.hit('Digit' + (k + 1))) this.scenarios.start(k);
+      }
+      if (i.hit('Backspace') || i.hit('Digit0')) this.scenarios.abort();
+    }
+
     /* ---- Alt: quick-tune an attribute with the wheel ---- */
     const alt = i.down('AltLeft') || i.down('AltRight');
     if (alt) {
@@ -504,10 +613,11 @@ class World {
         // the low end runs past the shoulder view into first person
         this.cameraRig.dist = clamp(this.cameraRig.dist + i.mouse.wheel * 1.2, 0.7, 22);
       }
-      for (let k = 0; k < p.powers.length; k++) {
+      for (let k = 0; k < p.powers.length && !scen; k++) {
         if (i.hit('Digit' + (k + 1)) && p.powerIndex !== k) {
           p.power?.cancel?.();
           p.powerIndex = k;
+          this.audio.play('select');
           this.notify(p.powers[k].name + ' — ' + p.powers[k].desc);
         }
       }
@@ -515,8 +625,18 @@ class World {
 
     if (i.hit('KeyV')) this.cameraRig.cycleDistance();
     if (i.hit('KeyT')) p.transform();
-    if (i.hit('KeyE')) p.tryEnterVehicle();
-    if (i.hit('KeyP')) {
+    if (i.hit('KeyE') && !useElevator(this)) p.tryEnterVehicle();
+    if (p.vehicle) {
+      // the dashboard: next, back (or restart), play/pause
+      if (i.hit('BracketRight')) { const t = this.audio.radioNext(); if (t) this.notify(`Radio ▶ ${t}`); }
+      if (i.hit('BracketLeft')) { const t = this.audio.radioPrev(); if (t) this.notify(`Radio ◀ ${t}`); }
+      if (i.hit('KeyP')) { const on = this.audio.radioToggle(); if (on !== null) this.notify(on ? `Radio ▶ ${this.audio.radioTitle}` : 'Radio paused'); }
+    } else if (this.audio.battle?.on) {
+      // the same keys drive the battle music while a fight is on
+      if (i.hit('BracketRight')) { const t = this.audio.battleNext(); if (t) this.notify(`Battle music ▶ ${t}`); }
+      if (i.hit('BracketLeft')) { const t = this.audio.battleRestart(); if (t) this.notify(`Battle music ◀ ${t}`); }
+      if (i.hit('KeyP')) { const on = this.audio.battleToggle(); if (on !== null) this.notify(on ? `Battle music ▶ ${this.audio.battleTitle}` : 'Battle music paused'); }
+    } else if (i.hit('KeyP')) {
       const c = this.crime.spawnNear(p.pos.x + rand(-140, 140), p.pos.z + rand(-140, 140));
       this.notify(c ? 'Crime spawned nearby' : 'Could not place a crime');
     }
@@ -567,6 +687,7 @@ class World {
     const dt = Math.min(this.clock.getDelta(), 1 / 20);
     this.time += dt;
 
+    this.audio.update(dt);
     const input = this.gather();
     if (input) this.step(dt, input);
     else this.input.endFrame();
@@ -574,6 +695,8 @@ class World {
     this.sky.update(this.camera, this.player.pos, dt);
     this.city.updateWater(dt, this.sky.sunDir, this.sky.uniforms.uSunCol.value,
       this.sky.uniforms.uHorizon.value, this.scene.fog);
+    this.elevatorPrompt.update();
+    updateCampus(this, dt);
     this.composer.render();
   };
 
@@ -588,7 +711,7 @@ class World {
       peds: this.peds,
       enemies: this.enemies,
       driveInput: p.vehicle ? this.driveInput() : null,
-      obstacles: [p.pos, ...this.peds.slice(0, 60).map(a => a.pos)]
+      obstacles: [p.pos]
     };
 
     this.traffic.update(dt, ctx);
@@ -600,6 +723,7 @@ class World {
     }
     for (const e of this.enemies) e.update(dt, ctx);
 
+    this.scenarios.update(dt, ctx);
     this.crime.update(dt, ctx);
     this.projectiles.update(dt);
     this.props.update(dt);
@@ -622,8 +746,9 @@ class World {
       // zoom decides
       noFirstPerson: drive
     });
-    // hide the hero once the camera is essentially at their eyes
-    p.holder.visible = this.cameraRig.fpBlend < 0.75;
+    // hide the hero once the camera is essentially at their eyes — and
+    // whenever they are in a car, where the body is behind the wheel
+    p.holder.visible = !p.vehicle && this.cameraRig.fpBlend < 0.75;
 
     this.hud.update(dt);
     this.input.endFrame();

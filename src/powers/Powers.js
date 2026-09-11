@@ -30,6 +30,7 @@ export class Projectiles {
     return m;
   }
   fire (opts) {
+    this.world.audio.play('shot', opts.pos);
     const p = {
       pos: opts.pos.clone(), vel: opts.dir.clone().multiplyScalar(opts.speed),
       life: opts.life ?? 3.2, radius: opts.radius ?? 0.6, damage: opts.damage ?? 25,
@@ -70,6 +71,7 @@ export class Projectiles {
       const gy = this.world.city.groundHeight(p.pos.x, p.pos.z, p.pos.y + 2);
       if (p.pos.y <= gy + 0.2) { p.pos.y = gy + 0.2; hit = true; }
       if (!hit && this.world.city.raycastBuildings(p.pos, _b.copy(p.vel).normalize(), Math.max(step, 1.5))) hit = true;
+      if (!hit && this.world.scenarios?.hitTest(p.pos, p.radius + 1)) hit = true;
       if (!hit) {
         for (const a of this.world.actorsNear(p.pos, p.radius + 0.7)) {
           if (a.faction === 'civilian' || a.dead) continue;
@@ -161,10 +163,11 @@ export class Paragon extends PowerSet {
       this.p.cam.addShake(0.02);
     }
     // heat vision burns whatever it lands on — people, cars, anything
-    this.world.applyImpact(aim, 2.6, {
+    const hits = this.world.applyImpact(aim, 2.6, {
       damage: 120 * dt * this.p.strength, knock: 0,
       vehicleDamage: 150 * dt * this.p.strength, propForce: 0, falloff: 0.3
     });
+    if (hits) this.world.audio?.beamHit(aim, dt, 1);
     this.p.setAimPose(true);
     this.p.playAction('heatVision', { hold: true });
   }
@@ -473,10 +476,11 @@ export class Solar extends PowerSet {
       }
       this.fx.burst(aim, '#ff9a2e', 4, 5, 0.4, 0.3, { grav: -3 });
     }
-    this.world.applyImpact(aim, 3.2, {
+    const hits = this.world.applyImpact(aim, 3.2, {
       damage: 105 * dt * this.p.strength, knock: 0,
       vehicleDamage: 130 * dt * this.p.strength, propForce: 0, falloff: 0.35
     });
+    if (hits) this.world.audio?.beamHit(aim, dt, 1.1);
     this.p.setAimPose(true);
     this.p.playAction('beamCast', { hold: true });
   }

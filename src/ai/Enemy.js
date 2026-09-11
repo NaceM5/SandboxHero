@@ -39,7 +39,7 @@ export class Enemy extends Actor {
     this.tier = tier;
     this.T = T;
     this.crime = crime;
-    this.pos.set(x, world.city.groundHeight(x, z), z);
+    this.pos.set(x, world.city.streetHeight(x, z), z);
     this.group.position.copy(this.pos);
     this.home = new THREE.Vector3(x, 0, z);
     this.state = 'idle';
@@ -74,6 +74,7 @@ export class Enemy extends Actor {
       to.x += rand(-0.8, 0.8) * (1 - this.aggro * 0.4);
       to.y += rand(-0.5, 0.5);
       to.z += rand(-0.8, 0.8) * (1 - this.aggro * 0.4);
+      this.world.audio.play('gun', from);
       fx.flashBeam(from, to, this.T.color, 0.055, 0.10);
       fx.burst(from, this.T.color, 4, 5, 0.28, 0.22);
       const hit = Math.random() < 0.30 + this.aggro * 0.42 + this.tier * 0.05;
@@ -98,6 +99,7 @@ export class Enemy extends Actor {
   damage (amount, from) {
     if (this.dead) return false;
     this.health -= amount;
+    this.world.audio?.voice(this, Math.min(1.2, .5 + amount / 60), amount > 40 ? .85 : 1);
     if (this.phys !== 'walk') {
       // still register the hit while airborne, just don't re-enter the AI
       this.world.effects.burst(
@@ -122,6 +124,8 @@ export class Enemy extends Actor {
     if (this.dead) return;
     this.dead = true;
     this.health = 0;
+    this.world.audio?.contacts.delete(this);            // the death cry always gets through
+    this.world.audio?.voice(this, 1.2, .7);
     this.state = 'down';
     this.staysDown = true;
     this.deathT = 0;
@@ -180,6 +184,24 @@ export class Enemy extends Actor {
     // riding in a getaway car: the crime moves the body, and they must stay
     // hidden — the visibility line below would put them back on show
     if (this.inVehicle) { this.updateAnim(dt); return; }
+    // on a scripted errand for a scenario (dragging a hostage, walking to a
+    // post): the scenario moves the body — until it is hurt, thrown or grabbed,
+    // at which point it is an ordinary enemy again
+    if (this.scripted) {
+      if (this.dead || this.phys !== 'walk' || this.health < this.maxHealth) this.scripted = false;
+      else { this.updateAnim(dt); return; }
+    }
+    // hanging under a parachute: the scenario moves the body until it lands —
+    // unless a power has taken hold of it or knocked it flying, in which case
+    // the canopy is gone and physics owns the body from here on
+    if (this.parachuting) {
+      if (this.dead || this.phys !== 'walk') this.parachuting = false;
+      else {
+        this.anim.play('fall', { fade: 0.25 });
+        this.updateAnim(dt);
+        return;
+      }
+    }
 
     // Treading water: no fighting from out there, and thirty seconds before
     // they go under.
@@ -279,6 +301,7 @@ export class Enemy extends Actor {
         if (d > reach) { moving = true; this.state = 'chase'; }
         else if (this.cool <= 0) {
           this.state = 'melee';
+          this.world.audio?.voice(this, .7, .9);       // the effort of the swing
           this.anim.play(this.tier >= 3 && Math.random() < 0.35 ? 'slam' : 'meleeSwing', { fade: 0.07, restart: true });
           this.cool = this.T.cd * rand(0.8, 1.3) / (0.6 + this.aggro * 0.8);
         } else if (this.anim.done) this.state = 'chase';

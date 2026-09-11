@@ -1,0 +1,31 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Vehicle fleet preview</title>
+<style>body{margin:0;background:#131b25;color:#eaf1f8;font:15px system-ui}header{position:absolute;top:24px;left:28px;z-index:1}h1{margin:0 0 12px;font-size:24px}select,button{padding:10px;background:#273647;color:white;border:1px solid #59697a;border-radius:6px;margin-right:8px}p{color:#a9b8c8}canvas{display:block}</style>
+<header><h1>Replacement vehicle fleet</h1><select id="model" aria-label="Car model"></select><select id="paint" aria-label="Paint color"></select><button id="rotate">Pause rotation</button><p id="status">Loading models…</p></header>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {VehicleFactory,VEHICLE_TYPES} from '../src/vehicles/VehicleFactory.js';
+const scene=new THREE.Scene();scene.background=new THREE.Color('#131b25');
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.toneMapping=THREE.ACESFilmicToneMapping;document.body.append(renderer.domElement);
+const camera=new THREE.PerspectiveCamera(36,innerWidth/innerHeight,.1,100);camera.position.set(6,3.6,7);camera.lookAt(0,.8,0);
+scene.add(new THREE.HemisphereLight(0xcde7ff,0x747b87,3));
+const light=new THREE.DirectionalLight(0xfff0d9,4);light.position.set(3,7,5);light.castShadow=true;light.shadow.bias=-.001;light.shadow.normalBias=.035;light.shadow.mapSize.set(2048,2048);scene.add(light);
+const ground=new THREE.Mesh(new THREE.CylinderGeometry(4.5,4.5,.13,64),new THREE.MeshStandardMaterial({color:0x35404c,roughness:.7}));ground.position.y=-.085;ground.receiveShadow=true;scene.add(ground);
+const factory=new VehicleFactory(scene,1), model=document.querySelector('#model'),paint=document.querySelector('#paint'),status=document.querySelector('#status');
+let vertices=0;
+for(const type of VEHICLE_TYPES){
+ const T=factory.typeInfo(type);model.add(new Option(T.name,type));factory.alloc(type);
+ for(const key of ['shell','trim','chrome','head','tail']) {const a=factory.pools[type][key].geometry.attributes.position.array;if(!Array.from(a).every(Number.isFinite))throw Error('Invalid geometry: '+type);vertices+=a.length/3;}
+}
+let spinning=true, angle=.35;document.querySelector('#rotate').onclick=e=>{spinning=!spinning;e.target.textContent=spinning?'Pause rotation':'Resume rotation';};
+const names=['Reference paint','Paint 2','Paint 3','Paint 4','Paint 5','Paint 6'];
+function colors(){paint.replaceChildren();const T=factory.typeInfo(model.value);(T.colors||['#758b9e','#ac2435','#e5e1d6','#1f2830','#285c79','#328271']).forEach((c,i)=>paint.add(new Option(names[i]+' '+c,c)));}
+model.value='m4';model.onchange=colors;colors();
+status.textContent=`Geometry checks passed · ${VEHICLE_TYPES.length} models · ${vertices.toLocaleString()} shared vertices`;
+const matrix=new THREE.Matrix4(), q=new THREE.Quaternion(),scale=new THREE.Vector3(),pos=new THREE.Vector3(),zero=new THREE.Matrix4().makeScale(0,0,0);
+let last=performance.now();
+function frame(now){const dt=Math.min((now-last)/1000,.05);last=now;if(spinning)angle+=dt*.23;factory.beginFrame();
+ for(const type of VEHICLE_TYPES){const active=type===model.value;matrix.makeRotationY(angle);factory.writeVehicle({type,idx:0,headlights:false,braking:false},active?matrix:zero);if(!active)continue;factory.setColor(type,0,paint.value);const T=factory.typeInfo(type);q.setFromAxisAngle(new THREE.Vector3(0,1,0),angle);for(const x of [-T.track,T.track])for(const z of [-T.wheelbase/2,T.wheelbase/2]){pos.set(x,T.wheelR,z).applyMatrix4(matrix);scale.set(T.wheelR*.62,T.wheelR,T.wheelR);factory.writeWheel(new THREE.Matrix4().compose(pos,q,scale),type);}}
+ factory.endFrame();renderer.render(scene,camera);requestAnimationFrame(frame);}
+requestAnimationFrame(frame);addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+</script></html>

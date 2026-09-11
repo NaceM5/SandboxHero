@@ -207,7 +207,20 @@ export class Ragdoll {
     for (let i = 0; i < N; i++) {
       const o = i * 3;
       const r = RADII[i] * this.scale;
-      const floor = city.groundHeight(P[o], P[o + 2], P[o + 1] + 0.6) + r;
+      let floor = city.groundHeight(P[o], P[o + 2], P[o + 1] + 0.6) + r;
+      // Water is not a floor. A limb that reaches it goes under, with the
+      // water's drag, and the body comes to rest floating just below the
+      // surface rather than lying on top of it.
+      let wl = -Infinity;
+      if (city.isWater(P[o], P[o + 2])) {
+        wl = city.waterLevel(P[o], P[o + 2]);
+        if (floor - r <= wl + 0.05) floor = wl - 0.9 + r;
+      }
+      if (P[o + 1] < wl + 0.1) {
+        O[o] += (P[o] - O[o]) * 0.3;
+        O[o + 1] += (P[o + 1] - O[o + 1]) * 0.45;
+        O[o + 2] += (P[o + 2] - O[o + 2]) * 0.3;
+      }
       if (P[o + 1] < floor) {
         P[o + 1] = floor;
         this.grounded = true;

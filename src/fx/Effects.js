@@ -40,7 +40,8 @@ void main () {
 const MAX_P = 3000;
 
 export class Effects {
-  constructor (scene) {
+  constructor (scene, audio) {
+    this.audio = audio;
     this.scene = scene;
     this.time = 0;
 
@@ -155,13 +156,15 @@ export class Effects {
     return r;
   }
 
-  shockwave (pos, color, radius = 9, life = 0.55) {
+  shockwave (pos, color, radius = 9, life = 0.55, sound = 'blast') {
+    this.audio?.play(sound, pos, Math.min(1.3, radius / 12));
     this.ring(pos, color, 0.4, radius, life);
     this.burst(pos, color, 22, 9, 0.55, 0.5, { grav: -8, drag: 0.9 });
   }
 
   /** Vertical sonic-boom cone, oriented down a direction. */
   boom (pos, dir, color, radius = 7, life = 0.45) {
+    this.audio?.play('boom', pos);
     const r = this.ring(pos, color, 0.5, radius, life);
     const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
     r.mesh.quaternion.copy(q);

@@ -1,4 +1,4 @@
-import { CITY } from '../world/RoadNetwork.js';
+import { WORLD } from '../world/Map.js';
 import { clamp } from '../core/Util.js';
 import { QUICK_ATTRS } from '../core/Attributes.js';
 
@@ -24,12 +24,17 @@ export class HUD {
       cross: $('crosshair'),
       map: $('minimapCanvas'),
       quick: $('quicktune'),
-      quickList: $('qtList')
+      quickList: $('qtList'),
+      scenMenu: $('scenarioMenu'),
+      scenList: $('scenarioList'),
+      scenStatus: $('scenarioStatus'),
+      scenTitle: $('scenarioTitle'),
+      scenSub: $('scenarioSub')
     };
     this.ctx = this.el.map.getContext('2d');
     this.noticeT = 0;
     this.flashT = 0;
-    this.mapRange = 460;
+    this.mapRange = 520;
     this.buildPowerBar();
     this.densityImage = null;
   }
@@ -56,6 +61,28 @@ export class HUD {
   }
 
   flashTransform () { this.flashT = 0.45; }
+
+  /* ---------------- battle scenarios ---------------- */
+
+  showScenarioMenu (list, activeId) {
+    const el = this.el.scenList;
+    el.innerHTML = '';
+    list.forEach((s, i) => {
+      const row = document.createElement('div');
+      row.className = 'qt-row sc-row' + (s.id === activeId ? ' sel' : '');
+      row.innerHTML = `<i>${i + 1}</i><div><b class="sc-name">${s.name}</b><div class="sc-desc">${s.desc}</div></div><b>${s.id === activeId ? 'ACTIVE' : ''}</b>`;
+      el.appendChild(row);
+    });
+    if (activeId) {
+      const row = document.createElement('div');
+      row.className = 'qt-row sc-row';
+      row.innerHTML = '<i>⌫</i><div><b class="sc-name">Abort scenario</b></div><b></b>';
+      el.appendChild(row);
+    }
+    this.el.scenMenu.classList.remove('hidden');
+  }
+
+  hideScenarioMenu () { this.el.scenMenu.classList.add('hidden'); }
 
   /* ---------------- Alt quick-tune ---------------- */
 
@@ -133,6 +160,14 @@ export class HUD {
       if (this.noticeT <= 0) this.el.notice.classList.remove('show');
     }
 
+    /* running scenario */
+    const st = w.scenarios?.status();
+    if (st) {
+      this.el.scenStatus.classList.remove('hidden');
+      this.el.scenTitle.textContent = st.title;
+      this.el.scenSub.textContent = st.sub;
+    } else this.el.scenStatus.classList.add('hidden');
+
     const hot = near && near.dist < 40;
     this.el.cross.classList.toggle('hot', !!hot);
     this.el.cross.style.opacity = p.vehicle ? '0' : '0.75';
@@ -161,42 +196,66 @@ export class HUD {
     const RAD = Math.hypot(W, H) / 2;           // covers the corners once rotated
 
     g.clearRect(0, 0, W, H);
-    g.fillStyle = '#080c14';
+    g.fillStyle = '#081420';                     // open water
     g.fillRect(0, 0, W, H);
 
     g.save();
     g.translate(cx, cy);
     g.rotate(rot);
 
-    /* crime density heat */
-    const B = CITY.BLOCKS;
-    const cell = CITY.CELL * sc;
+    /* coastline */
+    const city = w.city;
+    g.fillStyle = '#131a24';
+    for (const isl of city.data.islands) {
+      const o = isl.outline;
+      g.beginPath();
+      g.moveTo(rx(o[0][0]), ry(o[0][1]));
+      for (let i = 1; i < o.length; i++) g.lineTo(rx(o[i][0]), ry(o[i][1]));
+      g.closePath();
+      g.fill();
+    }
+    const pond = city.pond;
+    if (Math.hypot(rx(pond.x), ry(pond.z)) < RAD + pond.rx * sc) {
+      g.fillStyle = '#081420';
+      g.beginPath();
+      g.ellipse(rx(pond.x), ry(pond.z), pond.rx * sc, pond.rz * sc, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    /* crime density heat — only the cells in view */
+    const cell = WORLD.CELL * sc;
     const amp = w.settings.get('crimeDensity');
-    for (let bj = 0; bj < B; bj++) {
-      for (let bi = 0; bi < B; bi++) {
-        const d = w.crime.density[bj * B + bi] * amp;
+    const ci0 = Math.max(0, Math.floor((p.pos.x - range * 1.5 - WORLD.X0) / WORLD.CELL));
+    const ci1 = Math.min(WORLD.BI - 1, Math.floor((p.pos.x + range * 1.5 - WORLD.X0) / WORLD.CELL));
+    const cj0 = Math.max(0, Math.floor((p.pos.z - range * 1.5 - WORLD.Z0) / WORLD.CELL));
+    const cj1 = Math.min(WORLD.BJ - 1, Math.floor((p.pos.z + range * 1.5 - WORLD.Z0) / WORLD.CELL));
+    for (let bj = cj0; bj <= cj1; bj++) {
+      for (let bi = ci0; bi <= ci1; bi++) {
+        const d = w.crime.density[bj * WORLD.BI + bi] * amp;
         if (d < 0.03) continue;
-        const wx = (bi - (B - 1) / 2) * CITY.CELL;
-        const wz = (bj - (B - 1) / 2) * CITY.CELL;
-        const x = rx(wx), y = ry(wz);
+        const c = WORLD.cellCenter(bi, bj);
+        const x = rx(c.x), y = ry(c.z);
         if (Math.hypot(x, y) > RAD + cell) continue;
         g.fillStyle = `rgba(255,${Math.round(90 - d * 60)},${Math.round(80 - d * 50)},${0.06 + d * 0.30})`;
         g.fillRect(x - cell / 2, y - cell / 2, cell, cell);
       }
     }
 
-    /* street grid */
-    g.strokeStyle = 'rgba(140,190,255,0.20)';
-    g.lineWidth = 1.5;
-    g.beginPath();
-    const G = CITY.GRID;
-    for (let i = 0; i < G; i++) {
-      const v = (i - (G - 1) / 2) * CITY.CELL;
-      const x = rx(v), y = ry(v);
-      if (Math.abs(x) < RAD) { g.moveTo(x, -RAD); g.lineTo(x, RAD); }
-      if (Math.abs(y) < RAD) { g.moveTo(-RAD, y); g.lineTo(RAD, y); }
+    /* streets — the real centrelines, elevated ones brighter */
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+    const reach = range * 1.5;
+    for (const e of w.roads.edges) {
+      if (e.maxX < p.pos.x - reach || e.minX > p.pos.x + reach || e.maxZ < p.pos.z - reach || e.minZ > p.pos.z + reach) continue;
+      const elevated = e.cls === 'bridge' || e.cls === 'viaduct' || e.cls === 'ramp';
+      g.strokeStyle = elevated ? 'rgba(200,225,255,0.55)' : 'rgba(140,190,255,0.26)';
+      g.lineWidth = clamp(e.width * sc * 0.9, 1, 4.5);
+      g.beginPath();
+      const pts = e.points;
+      g.moveTo(rx(pts[0][0]), ry(pts[0][1]));
+      for (let i = 1; i < pts.length; i++) g.lineTo(rx(pts[i][0]), ry(pts[i][1]));
+      g.stroke();
     }
-    g.stroke();
 
     /* vehicles */
     g.fillStyle = 'rgba(190,215,240,0.55)';
@@ -212,6 +271,23 @@ export class HUD {
       const x = rx(a.pos.x), y = ry(a.pos.z);
       if (Math.hypot(x, y) > RAD) continue;
       g.fillRect(x - 0.9, y - 0.9, 1.8, 1.8);
+    }
+
+    /* aircraft — arrowheads pointing their way, pinned to the rim when far */
+    if (w.scenarios?.active) {
+      for (const a of w.scenarios.targets) {
+        let x = rx(a.pos.x), y = ry(a.pos.z);
+        const d = Math.hypot(x, y), rim = Math.min(W, H) / 2 - 8;
+        if (d > rim && d > 1e-3) { x = x / d * rim; y = y / d * rim; }
+        g.save();
+        g.translate(x, y);
+        g.rotate(-a.heading + Math.PI);
+        const s = a.kind === 'titan' ? 6 : 4;
+        g.beginPath(); g.moveTo(0, -s); g.lineTo(-s * 0.7, s); g.lineTo(0, s * 0.45); g.lineTo(s * 0.7, s); g.closePath();
+        g.fillStyle = a.kind === 'titan' ? '#ff8a5a' : '#ffd27a';
+        g.fill();
+        g.restore();
+      }
     }
 
     /* crimes — off-map ones pin to the rim rather than vanishing */

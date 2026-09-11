@@ -400,6 +400,19 @@ export function randomCivilian () {
   };
 }
 
+const SUITS = ['#1f2733', '#23262e', '#2c3540', '#3a3a44', '#1a1d24', '#2f2a33'];
+
+/** Office staff: a dark suit — jacket, matching trousers, black shoes, a few pairs of glasses. */
+export function randomSuit () {
+  const suit = pick(SUITS);
+  return {
+    ...randomCivilian(),
+    top: suit, bottom: suit, jacket: suit, jacketOn: true, shoes: '#121316',
+    hairStyle: Math.random() < 0.1 ? 'bald' : (Math.random() < 0.18 ? 'long' : 'short'),
+    glasses: Math.random() < 0.35
+  };
+}
+
 const GANG = [
   { name: 'Thug',      primary: '#2a2f3a', secondary: '#4a1f26', accent: '#ff5a3c' },
   { name: 'Enforcer',  primary: '#1d2b3a', secondary: '#26404f', accent: '#39e6ff' },

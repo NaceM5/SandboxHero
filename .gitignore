@@ -1,2 +1,4 @@
 .DS_Store
 node_modules/
+# the original map generator workspace (131 MB with its own node_modules and export); src/world/tideline is the live copy
+GameMap/

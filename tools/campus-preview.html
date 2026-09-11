@@ -1,0 +1,20 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Meridian Campus</title>
+<style>body{margin:0;font:14px system-ui;background:#172934;color:white}header{position:absolute;top:18px;left:18px;background:#122b39e8;padding:16px;z-index:1;border-radius:8px}h1{margin:0 0 8px;font-size:21px}button{padding:9px;border:0;margin:3px;cursor:pointer}canvas{display:block}</style>
+<header><h1>Meridian Campus</h1><p>Harbor Island · 3 offices · secure mission operations</p><button data-view="campus">Campus</button><button data-view="entrance">Secure entrance</button><button data-view="main">Main floor</button><button data-view="upper">Upper floor</button><button data-view="basement">Control room</button></header>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {GameMap} from '../src/world/Map.js';import {updateCampus} from '../src/world/Campus.js';
+const scene=new THREE.Scene();scene.background=new THREE.Color('#aec5d2');
+const city=new GameMap(scene),c=city.data.campus;city.data.boxes=city.data.boxes.filter(b=>b.id.startsWith('campus-')||Math.hypot(b.x-city.landmarks.carrier.x,b.z-city.landmarks.carrier.z)<400);city.buildVisuals();city.buildCollision();city.buildWater();
+scene.add(new THREE.HemisphereLight(0xe4f4ff,0x90989f,2));const sun=new THREE.DirectionalLight(0xffead4,2.3);sun.position.set(-1900,400,-1400);scene.add(sun);
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(1);renderer.toneMapping=THREE.ACESFilmicToneMapping;document.body.append(renderer.domElement);
+const camera=new THREE.PerspectiveCamera(65,innerWidth/innerHeight,.5,10000),controls=new OrbitControls(camera,renderer.domElement),player={pos:new THREE.Vector3(c.x,8.28,c.z)};
+const world={city,scene,renderer,player};
+window.preview={world,camera,controls};
+function view(name){if(name==='campus'){camera.position.set(-2450,260,-1330);controls.target.set(-2120,12,-1700);player.pos.set(-1950,8.28,-1475);}else if(name==='entrance'){camera.position.set(c.x+11,c.floors.main+4,c.z+49);controls.target.set(c.x,c.floors.main+5,c.z+28);player.pos.set(c.x,c.floors.main,c.z+31);}else{const y=c.floors[name];camera.position.set(c.x+(name==='basement'?3:1),y+2.4,c.z+(name==='basement'?-5:18));controls.target.set(c.x,y+2,c.z-22);player.pos.set(c.x,y,c.z+(name==='basement'?-6:18));}controls.update();}
+for(const b of document.querySelectorAll('button'))b.onclick=()=>view(b.dataset.view);view('campus');
+renderer.setAnimationLoop(()=>{updateCampus(world,.016);renderer.render(scene,camera);});
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+window.ready=true;
+</script></html>

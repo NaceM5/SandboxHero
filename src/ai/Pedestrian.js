@@ -12,18 +12,27 @@ import { rand, randInt, pick, clamp, angleDelta } from '../core/Util.js';
  * cowering if it's happening right on top of them.
  */
 export class Pedestrian extends Actor {
-  constructor (world, node) {
+  constructor (world, node, opts = {}) {
     // bystanders can be thrown around all day but never die — this is a
     // sandbox, not a massacre simulator
-    super(world, randomCivilian(), {
+    super(world, opts.appearance || randomCivilian(), {
       moveSpeed: rand(1.25, 1.85), health: 60, faction: 'civilian', cull: 190, invulnerable: true
     });
     this.node = node || world.roads.randomWalkNode();
     this.next = pick(this.node.links);
+    // Staff of a place rather than passers-by: they live on a set of posts —
+    // a floor of an office, a courtyard — and never touch the footway graph,
+    // so the crowd streaming leaves them alone and they never wander off.
+    this.station = opts.station ? { posts: opts.station.posts, y: opts.station.y, target: null } : null;
     // Sit on the terrain from the outset: a pedestrian spawned beyond the cull
     // radius returns from update() before integrate() runs, so a y of 0 would
     // leave them buried in any ground that isn't at sea level.
-    this.pos.set(this.node.x, world.city.groundHeight(this.node.x, this.node.z), this.node.z);
+    this.pos.set(this.node.x, world.city.groundHeight(this.node.x, this.node.z, this.node.y + 3), this.node.z);
+    if (this.station) {
+      const start = pick(this.station.posts);
+      this.pos.set(start[0] + rand(-1, 1), world.city.groundHeight(start[0], start[1], this.station.y + 1.4), start[1] + rand(-1, 1));
+      this.state = 'idle';
+    }
     this.group.position.copy(this.pos);
     this.state = 'walk';
     this.timer = rand(0, 4);
@@ -45,6 +54,7 @@ export class Pedestrian extends Actor {
     if (this.phys !== 'walk') return;
     this.fear = Math.max(this.fear, amount);
     if (this.state !== 'flee' && this.state !== 'cower') {
+      if (Math.random() < 0.5) this.world.audio?.voice(this, .55, 1.3);
       // most people run; only those caught right in it freeze up
       this.state = (preferFlee || Math.random() < 0.85) ? 'flee' : 'cower';
       this.fleeFrom = from ? from.clone() : this.pos.clone().add(new THREE.Vector3(rand(-1, 1), 0, rand(-1, 1)));
@@ -53,8 +63,79 @@ export class Pedestrian extends Actor {
     }
   }
 
+  /** Staff: the next post to drift to — nearby for preference, never the one they are on. */
+  _nextPost () {
+    const st = this.station;
+    const here = st.target;
+    const others = st.posts.filter(q => q !== here);
+    const near = others.filter(q => Math.hypot(q[0] - this.pos.x, q[1] - this.pos.z) < 60);
+    // a short stroll for preference; otherwise one of the three closest, never a hike across the whole site
+    const pool = near.length ? near : others.sort((a, b) => Math.hypot(a[0] - this.pos.x, a[1] - this.pos.z) - Math.hypot(b[0] - this.pos.x, b[1] - this.pos.z)).slice(0, 3);
+    const q = pick(pool.length ? pool : st.posts);
+    st.target = q;
+    st.best = Infinity; st.stall = 0;
+    this.wanderTo = { x: q[0] + rand(-1.2, 1.2), z: q[1] + rand(-1.2, 1.2) };
+  }
+
+  /** Staff state machine: idle at a post, drift to another, flee to the far one. */
+  _stationStep (dt, player, distToPlayer) {
+    let moving = false, speedMul = 1;
+    const st = this.station;
+    switch (this.state) {
+      case 'idle':
+        this.timer -= dt;
+        if (this.timer <= 0) { this._nextPost(); this.state = 'walk'; this.timer = rand(6, 22); }
+        break;
+      case 'gawk':
+        this.timer -= dt;
+        this.faceTowards(player.pos.x, player.pos.z, 6, dt);
+        if (this.timer <= 0) { this.state = 'idle'; this.timer = rand(2, 6); }
+        break;
+      case 'cower':
+        this.timer -= dt;
+        if (this.timer <= 0 && this.fear < 0.25) { this.state = 'idle'; this.timer = rand(2, 6); }
+        break;
+      case 'flee': {
+        this.timer -= dt;
+        speedMul = 2.2;
+        const t = this.wanderTo;
+        if (!t || Math.hypot(t.x - this.pos.x, t.z - this.pos.z) < 1.5) { this.state = 'cower'; this.timer = rand(3, 7); break; }
+        this.faceTowards(t.x, t.z, 7, dt);
+        moving = true;
+        if (this.timer <= 0) { this.state = 'idle'; this.timer = rand(2, 5); }
+        break;
+      }
+      default: { // walk
+        const t = this.wanderTo;
+        if (!t) { this._nextPost(); break; }
+        const d = Math.hypot(t.x - this.pos.x, t.z - this.pos.z);
+        if (d < 1.1) { this.state = 'idle'; this.timer = rand(5, 18); break; }
+        // wedged behind a desk or a planter: give up on this post and pick another later
+        if (d < st.best - 0.15) { st.best = d; st.stall = 0; }
+        else if ((st.stall = (st.stall || 0) + dt) > 4) { this.state = 'idle'; this.timer = rand(2, 6); break; }
+        this.faceTowards(t.x, t.z, 5.5, dt);
+        moving = true;
+        if (this.gawk <= 0 && distToPlayer < 14 && player.suited && Math.random() < dt * 0.55) {
+          this.state = 'gawk'; this.timer = rand(1.5, 4); this.gawk = 12;
+        }
+      }
+    }
+    return { moving, speedMul };
+  }
+
   /** Head for whichever neighbouring pavement node leads away from danger. */
   _pickFleeNode () {
+    if (this.station) {
+      // staff run to whichever of their posts is furthest from the trouble
+      let best = null, bd = -Infinity;
+      for (const q of this.station.posts) {
+        const d = Math.hypot(q[0] - this.fleeFrom.x, q[1] - this.fleeFrom.z);
+        if (d > bd) { bd = d; best = q; }
+      }
+      this.station.target = best;
+      this.wanderTo = best ? { x: best[0], z: best[1] } : null;
+      return;
+    }
     const links = this.node.links;
     let best = null, bestScore = -Infinity;
     for (const l of links) {
@@ -92,7 +173,10 @@ export class Pedestrian extends Actor {
   _advanceNode () {
     this.prev = this.node;
     this.node = this.next || this.node;
-    const links = this.node.links;
+    // a rare footway (the private drive up to the estate) is not somewhere
+    // the crowd wanders unless it is already on it
+    const links = this.node.links.filter(l => !l.edge?.rare || this.node.edge?.rare);
+    if (!links.length) { this.next = pick(this.node.links); return; }
     // prefer staying on this block; only cross at a crosswalk, and not often
     const onBlock = links.filter(l => !(this.node.crossing?.has(l)) && l !== this.prev);
     const crossings = links.filter(l => this.node.crossing?.has(l));
@@ -101,7 +185,43 @@ export class Pedestrian extends Actor {
   }
 
   update (dt, ctx) {
-    if (this.phys !== 'walk') { this.updateRagdoll(dt); return; }
+    if (this.phys !== 'walk') {
+      // a grab or a blast breaks any hold on them
+      if (this.captive) this.captive = null;
+      this.updateRagdoll(dt);
+      return;
+    }
+    // in the hold of an aircraft: hidden and inert until it lands or dies
+    if (this.aboard) return;
+    // held in the penthouse: cower where they were put
+    if (this.hostage) {
+      this.anim.play('cower', { fade: 0.25 });
+      this.anim.look[0] *= 0.9; this.anim.look[1] *= 0.9;
+      this.updateAnim(dt);
+      this.group.position.copy(this.pos);
+      return;
+    }
+    // being dragged along by a raider: stumble behind them
+    if (this.captive) {
+      const r = this.captive;
+      if (r.dead || r.phys !== 'walk' || !r.scripted) { this.captive = null; this.panic(r.pos, 1, true); }
+      else {
+        const bx = r.pos.x - Math.sin(r.heading) * 0.95, bz = r.pos.z - Math.cos(r.heading) * 0.95;
+        this.pos.x += (bx - this.pos.x) * Math.min(1, dt * 10);
+        this.pos.z += (bz - this.pos.z) * Math.min(1, dt * 10);
+        this.pos.y = this.world.city.groundHeight(this.pos.x, this.pos.z, this.pos.y + 1.4);
+        this.heading = r.heading;
+        this.group.position.copy(this.pos);
+        this.group.rotation.set(0, this.heading, 0);
+        this.setVisible(true);
+        this.anim.play(r.speed > 2.6 ? 'panicRun' : 'walk', { fade: 0.2, speed: 1.1 });
+        this.anim.flinch = Math.max(this.anim.flinch, 0.4);
+        this.updateAnim(dt);
+        return;
+      }
+    }
+    // walking a scripted path: the scenario moves the body, we only animate
+    if (this.scripted) { this.updateAnim(dt); return; }
     if (this.airborne) {
       // off an edge — gravity owns the frame, no steering in mid-air
       this.integrate(dt);
@@ -133,7 +253,10 @@ export class Pedestrian extends Actor {
     let speedMul = 1;
     let waiting = false;
 
-    switch (this.state) {
+    if (this.station) {
+      const r = this._stationStep(dt, player, distToPlayer);
+      moving = r.moving; speedMul = r.speedMul;
+    } else switch (this.state) {
       case 'idle': {
         this.timer -= dt;
         if (this.timer <= 0) { this.state = 'walk'; this.timer = rand(6, 22); }
@@ -170,13 +293,18 @@ export class Pedestrian extends Actor {
           this._advanceNode();
           if (Math.random() < 0.14) { this.state = 'idle'; this.timer = rand(2, 7); break; }
         }
-        // step off the kerb only once the crosswalk is clear
-        if (this.node.crossing?.has(this.next) && !this._crossingClear(this.next)) {
+        // step off the kerb only once the crosswalk is clear — but once in
+        // the road, keep going: it is the cars' job to stop, and someone who
+        // sees one coming hurries rather than freezing in the lane
+        const crossing = this.node.crossing?.has(this.next);
+        const offKerb = crossing && Math.hypot(this.pos.x - this.node.x, this.pos.z - this.node.z) > 2.2;
+        if (crossing && !offKerb && !this._crossingClear(this.next)) {
           this.crossWait += dt;
           waiting = true;
           this.faceTowards(this.next.x, this.next.z, 5, dt);
           if (this.crossWait < 9) break;      // give up eventually so nobody sticks
         } else this.crossWait = 0;
+        if (offKerb && !this._crossingClear(this.next)) speedMul = 1.45;
 
         this.faceTowards(tgt.x, tgt.z, 5.5, dt);
         moving = true;
@@ -210,7 +338,10 @@ export class Pedestrian extends Actor {
         this.pos.z += Math.cos(h) * sp * dt;
       }
       this.speed = moving ? sp : 0;
-    } else this.speed = 0;
+      // where they are heading, for cars deciding whether to brake
+      this.walkX = moving ? Math.sin(h) * sp : 0;
+      this.walkZ = moving ? Math.cos(h) * sp : 0;
+    } else { this.speed = 0; this.walkX = 0; this.walkZ = 0; }
 
     if (ctx.neighbors) {
       for (const o of ctx.neighbors) {
@@ -252,8 +383,9 @@ export class Pedestrian extends Actor {
 
     // never step into the water — back off and pick a new heading. Only at
     // ground level: up on a roof the nearest walk node is fifty metres down.
-    if (this.pos.y < 6 && this.world.city.isWater(this.pos.x, this.pos.z)) {
-      const n = this.world.roads.nearestWalkNode(this.pos.x, this.pos.z);
+    const city = this.world.city;
+    if (!this.station && city.isWater(this.pos.x, this.pos.z) && this.pos.y < city.waterLevel(this.pos.x, this.pos.z) + 6) {
+      const n = this.world.roads.nearestWalkNode(this.pos.x, this.pos.z, city.waterLevel(this.pos.x, this.pos.z), 14);
       this.pos.x += (n.x - this.pos.x) * 0.25;
       this.pos.z += (n.z - this.pos.z) * 0.25;
       this.node = n; this.next = pick(n.links);
@@ -270,7 +402,7 @@ export class Pedestrian extends Actor {
 
   /** Back on their feet after being thrown — leave in a hurry. */
   onRecovered () {
-    this.node = this.world.roads.nearestWalkNode(this.pos.x, this.pos.z);
+    this.node = this.world.roads.nearestWalkNode(this.pos.x, this.pos.z, this.pos.y, 8);
     this.state = 'flee';
     this.timer = rand(4, 8);
     this.fleeFrom = this.world.player.pos.clone();
